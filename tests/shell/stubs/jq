@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Shim so the stub works wherever "python3" is not on PATH (Git Bash, mainly).
+exec python "$(dirname "$0")/jq_impl.py" "$@"

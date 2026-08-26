@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Stub systemctl. Service state is controlled by $STUB_SERVICE_ACTIVE.
+set -uo pipefail
+printf '%s\n' "systemctl $*" >> "$STUB_LOG"
+for arg in "$@"; do
+  case "$arg" in
+    is-active) [ "${STUB_SERVICE_ACTIVE:-0}" = "1" ] && exit 0 || exit 3 ;;
+  esac
+done
+exit 0

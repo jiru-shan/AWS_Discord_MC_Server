@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "blkid $*" >> "$STUB_LOG"
+dev="${!#}"
+case " ${STUB_FORMATTED_DEVICES:-} " in
+  *" $dev "*) [[ "$*" == *"-s UUID"* ]] && echo "stub-uuid-1234"; exit 0 ;;
+esac
+exit 2

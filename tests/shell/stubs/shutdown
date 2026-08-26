@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Stub shutdown. Recording this instead of powering the machine off is the
+# whole point of the harness, so make the marker unmistakable.
+set -uo pipefail
+printf '%s\n' "shutdown $*" >> "$STUB_LOG"
+printf 'POWERED-OFF\n' >> "$STUB_DIR/shutdown-calls"
+exit 0

@@ -1,0 +1,22 @@
+[Unit]
+Description=Refresh Minecraft server configuration and scripts from AWS
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/srv/minecraft
+Before=minecraft.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+EnvironmentFile=/etc/minecraft/bootstrap.env
+ExecStart=/opt/minecraft/bin/refresh-config.sh
+TimeoutStartSec=120
+# Never block the server from starting: a failed refresh leaves the previous
+# configuration in place, which is always good enough to run.
+SuccessExitStatus=0 1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=minecraft-refresh
+
+[Install]
+WantedBy=multi-user.target

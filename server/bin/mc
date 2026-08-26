@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Small admin CLI for the instance. Reach it with:
+#   aws ssm start-session --target <instance-id>
+# then run `sudo mc <command>`.
+set -euo pipefail
+. "${INSTALL_DIR:-/opt/minecraft}/bin/common.sh"
+
+usage() {
+  cat <<'USAGE'
+Usage: mc <command>
+
+  status              service state, player-facing address and uptime
+  address             the address players should connect to
+  console <command>   send a command to the server console (e.g. mc console list)
+  logs [-f]           show the server log, -f to follow
+  backup              take a backup now (safe while the server is running)
+  stop                save, back up and power the instance off
+  maintenance-stop    stop the server but leave the instance running
+  start               start the server
+  update              re-download the payload Terraform uploaded
+USAGE
+}
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift || true
+
+case "$cmd" in
+  status)
+    systemctl status minecraft.service --no-pager || true
+    echo
+    echo "connect address: $(connect_address_with_port 2>/dev/null || echo 'unknown')"
+    ;;
+  address)
+    connect_address_with_port
+    ;;
+  console)
+    [ $# -gt 0 ] || die "usage: mc console <command>"
+    [ -p "$RUN_DIR/console" ] || die "server is not running"
+    echo "$*" > "$RUN_DIR/console"
+    echo "sent: $*  (see the reply with: mc logs)"
+    ;;
+  logs)
+    journalctl -u minecraft.service --no-pager -n 200 "$@"
+    ;;
+  backup)
+    "$INSTALL_DIR/bin/backup.sh"
+    ;;
+  stop)
+    "$INSTALL_DIR/bin/request-stop.sh"
+    ;;
+  maintenance-stop)
+    # No sentinel, so on-stop.sh backs up but leaves the instance running.
+    rm -f "$RUN_DIR/idle-shutdown"
+    systemctl stop minecraft.service
+    echo "server stopped; the instance is still running"
+    ;;
+  start)
+    systemctl start minecraft.service
+    ;;
+  update)
+    "$INSTALL_DIR/bin/update-payload.sh"
+    ;;
+  ""|-h|--help|help)
+    usage
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    usage
+    exit 1
+    ;;
+esac

@@ -1,0 +1,83 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored, because
+# the Discord webhook URL in it is a credential.
+#
+# Run `terraform apply` after any change here. Most settings are re-read by the
+# instance on its next boot, with no rebuild.
+
+# --------------------------------------------------------------------------
+# Required
+# --------------------------------------------------------------------------
+
+# Discord developer portal -> your application -> General Information -> Public Key
+discord_public_key = "0000000000000000000000000000000000000000000000000000000000000000"
+
+# https://aka.ms/MinecraftEULA
+accept_minecraft_eula = true
+
+# --------------------------------------------------------------------------
+# Where it runs
+# --------------------------------------------------------------------------
+
+aws_region    = "us-west-2"
+project_name  = "minecraft"
+instance_type = "t4g.medium"
+
+# --------------------------------------------------------------------------
+# How players reach it
+#
+# elastic_ip is the simplest: a fixed IP, no domain required.
+# --------------------------------------------------------------------------
+
+addressing_mode = "elastic_ip"
+
+# For addressing_mode = "route53" instead, comment out the line above and use:
+# addressing_mode     = "route53"
+# route53_zone_id     = "Z0000000000000000000"
+# route53_record_name = "mc.example.com"
+
+# --------------------------------------------------------------------------
+# Discord notifications
+#
+# Channel settings -> Integrations -> Webhooks -> New Webhook -> Copy URL.
+# This is a credential: treat it like a password.
+# --------------------------------------------------------------------------
+
+discord_webhook_url  = ""
+discord_bot_username = "Minecraft Server"
+
+# Restrict who can start and stop the server. Right-click a role in Discord with
+# Developer Mode on to copy its ID. Empty means anyone in the server may.
+# discord_allowed_role_ids = ["123456789012345678"]
+
+# --------------------------------------------------------------------------
+# The server itself
+# --------------------------------------------------------------------------
+
+minecraft_version = "latest"
+server_motd       = "An on-demand Minecraft server"
+server_difficulty = "normal"
+server_max_players = 10
+
+# Minutes with no players before the instance saves, backs up and powers off.
+# This is what keeps the bill proportional to time actually played.
+idle_timeout_minutes = 15
+
+# Strongly recommended while the port is open to the internet.
+# server_whitelist         = true
+# server_whitelist_players = ["YourMinecraftName"]
+# server_ops               = ["YourMinecraftName"]
+
+# --------------------------------------------------------------------------
+# Migrating an existing world
+# --------------------------------------------------------------------------
+
+# Upload a tarball of your current server directory, then point at it. Unpacked
+# once, on first boot only.
+# restore_from_s3 = "s3://my-bucket/old-server.tar.gz"
+
+# --------------------------------------------------------------------------
+# Backups
+# --------------------------------------------------------------------------
+
+backup_retention_days = 30
+local_backup_keep     = 3

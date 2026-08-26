@@ -1,0 +1,40 @@
+[Unit]
+Description=Minecraft on-demand server
+Documentation=https://github.com/your-org/AWS_Discord_MC_Server
+After=network-online.target minecraft-refresh.service
+Wants=network-online.target
+# Pick up any configuration or script changes from the last `terraform apply`
+# before starting. Wants, not Requires: a failed refresh must not stop the
+# server from coming up with the configuration it already has.
+Wants=minecraft-refresh.service
+# The world lives on the data volume; do not start before it is mounted.
+RequiresMountsFor=/srv/minecraft
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/minecraft/config.env
+
+# Runs as root so that ExecStopPost can power the instance off without a
+# sudoers rule. servermanager.js drops to MC_UID/MC_GID for the Java process
+# itself, which is the part exposed to the internet.
+ExecStartPre=/opt/minecraft/bin/announce-address.sh
+ExecStart=/usr/bin/node /opt/minecraft/bin/servermanager.js
+ExecStopPost=/opt/minecraft/bin/on-stop.sh
+
+# Never restart: an exit here means the session is over and the box is on its
+# way down. Restarting would fight the shutdown and keep the instance billing.
+Restart=no
+
+# Generous stop timeout: saving a large world can take a while, and being
+# killed mid-save is how worlds get corrupted.
+TimeoutStopSec=300
+KillSignal=SIGTERM
+KillMode=mixed
+
+LimitNOFILE=1048576
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=minecraft
+
+[Install]
+WantedBy=multi-user.target

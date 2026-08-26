@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Stub lsblk driven by $STUB_LSBLK_DISKS ("device:mountpoints" per line).
+set -uo pipefail
+if [[ " $* " == *" -dpno NAME "* ]] || [[ " $* " == *" -dpno "*"NAME"* ]]; then
+  while IFS=: read -r dev _; do [ -n "$dev" ] && echo "$dev"; done <<< "${STUB_LSBLK_DISKS:-}"
+  exit 0
+fi
+target="${!#}"
+while IFS=: read -r dev mounts; do
+  if [ "$dev" = "$target" ]; then printf '%s\n' "${mounts//,/$'\n'}"; fi
+done <<< "${STUB_LSBLK_DISKS:-}"
+exit 0

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Stub curl covering the two things the scripts use it for: IMDSv2 metadata and
+# posting to the Discord webhook.
+set -uo pipefail
+printf '%s\n' "curl $*" >> "$STUB_LOG"
+
+url=""
+data=""
+next_is_data=0
+for arg in "$@"; do
+  if [ "$next_is_data" = "1" ]; then data="$arg"; next_is_data=0; continue; fi
+  case "$arg" in
+    -d) next_is_data=1 ;;
+    http://*|https://*) url="$arg" ;;
+  esac
+done
+
+case "$url" in
+  *169.254.169.254/latest/api/token)
+    [ "${STUB_IMDS_FAIL:-0}" = "1" ] && exit 22
+    echo "stub-imds-token"
+    ;;
+  *169.254.169.254/latest/meta-data/public-ipv4)
+    [ "${STUB_IMDS_FAIL:-0}" = "1" ] && exit 22
+    [ "${STUB_NO_PUBLIC_IP:-0}" = "1" ] && exit 22
+    echo "${STUB_PUBLIC_IP:-203.0.113.10}"
+    ;;
+  *169.254.169.254/latest/meta-data/instance-id)
+    echo "i-0123456789abcdef0"
+    ;;
+  *discord.com/api/webhooks/*)
+    [ "${STUB_WEBHOOK_FAIL:-0}" = "1" ] && exit 22
+    printf '%s\n' "$data" >> "$STUB_DIR/webhook-posts"
+    ;;
+  *)
+    echo "stub curl: unhandled url '$url'" >&2
+    exit 64
+    ;;
+esac
+exit 0

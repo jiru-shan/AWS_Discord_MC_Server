@@ -1,0 +1,56 @@
+#!/bin/bash
+# Runs once, at the first boot of the instance, via cloud-init.
+#
+# Kept deliberately small: it writes just enough configuration to reach AWS,
+# then hands over to bootstrap.sh from the payload Terraform uploaded. Keeping
+# the real logic in a plain shell file, rather than in this template, means the
+# shell is not competing with Terraform over interpolation syntax, and the
+# script can be linted and read on its own.
+#
+# Note the layout this establishes: code lives on the root volume under
+# /opt/minecraft, and the world lives on the separate data volume mounted at
+# /srv/minecraft. They must not overlap, or mounting the data volume would hide
+# the very scripts that mounted it.
+#
+# Output lands in /var/log/cloud-init-output.log.
+
+set -euxo pipefail
+
+mkdir -p /etc/minecraft
+
+cat > /etc/minecraft/bootstrap.env <<'BOOTSTRAP_ENV'
+${bootstrap_env}
+BOOTSTRAP_ENV
+chmod 0644 /etc/minecraft/bootstrap.env
+
+# Amazon Linux 2023 ships the AWS CLI, but not always unzip.
+dnf install -y unzip tar gzip
+
+export AWS_DEFAULT_REGION="${region}"
+
+work=$(mktemp -d)
+aws s3 cp "s3://${payload_bucket}/${payload_key}" "$work/payload.zip"
+
+mkdir -p /opt/minecraft/payload
+unzip -qo "$work/payload.zip" -d /opt/minecraft/payload
+chmod +x /opt/minecraft/payload/bin/*
+rm -rf "$work"
+
+# A failure here happens before minecraft.service exists, so the ExecStopPost
+# that normally powers the instance off never runs and a broken first boot would
+# sit there billing indefinitely. Report it, then leave a half hour window to
+# connect with SSM and read this log before the instance stops itself.
+set +e
+bash /opt/minecraft/payload/bin/bootstrap.sh
+bootstrap_status=$?
+set -e
+
+if [ "$bootstrap_status" -ne 0 ]; then
+  /opt/minecraft/payload/bin/notify.sh \
+    "First boot failed (exit $bootstrap_status). The instance powers off in 30 minutes; run 'aws ssm start-session' and read /var/log/cloud-init-output.log to see why." \
+    || true
+  if [ "${shutdown_on_crash}" = "true" ]; then
+    shutdown -h +30
+  fi
+  exit "$bootstrap_status"
+fi
