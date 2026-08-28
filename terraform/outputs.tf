@@ -1,6 +1,6 @@
 output "discord_interactions_endpoint_url" {
   description = "Paste this into Interactions Endpoint URL on the Discord application General Information page."
-  value       = aws_lambda_function_url.discord.function_url
+  value       = local.interactions_endpoint_url
 }
 
 output "connect_address" {
@@ -41,7 +41,7 @@ output "next_steps" {
 
     1. Discord developer portal -> your application -> General Information
        Interactions Endpoint URL:
-         ${aws_lambda_function_url.discord.function_url}
+         ${local.interactions_endpoint_url}
        Discord sends a signed test request when you save. If it saves cleanly,
        the endpoint is live.
 

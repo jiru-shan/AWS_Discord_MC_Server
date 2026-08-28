@@ -658,56 +658,54 @@ assert_contains "$out" "rc=1" "no candidate must be an error"
 assert_not_contains "$out" "/dev/nvme0n1" "the root disk must never be offered"
 teardown
 
-setup "seed_player_list produces valid JSON and trims whitespace"
-out=$(cd "$ROOT" && bash -c "
-  . '$INSTALL_DIR/bin/common.sh'
-  SERVER_DIR='$SERVER_DIR'
-  $(sed -n '/^seed_player_list()/,/^}/p' "$REPO/server/bin/bootstrap.sh")
-  seed_player_list ops.json ' Alice , Bob ,, Carol '
-  cat '$SERVER_DIR/ops.json'
-" 2>&1)
-assert_contains "$out" '"name":"Alice"' "first name parsed"
-assert_contains "$out" '"name":"Carol"' "last name parsed"
-assert_not_contains "$out" '"name":""' "empty entries must be dropped"
-assert_contains "$out" '"level":4' "op level as a number"
-python -c "import json,sys; d=json.loads(sys.argv[1]); assert len(d)==3, d" "$(echo "$out" | tail -1)" 2>/dev/null
-check "the file parses as JSON with exactly 3 entries" "$?"
+setup "seeding produces valid JSON and trims whitespace" \
+  'SERVER_OPS=" Alice , Bob ,, Carol "'
+run_script seed-players.sh
+ops=$(cat "$SERVER_DIR/ops.json")
+assert_contains "$ops" '"name":"Alice"' "first name"
+assert_contains "$ops" '"name":"Carol"' "name after an empty entry"
+assert_not_contains "$ops" '" Bob "' "surrounding whitespace should be trimmed"
+count=$(python -c "import json,sys;print(len(json.load(open(sys.argv[1]))))" "$SERVER_DIR/ops.json" 2>/dev/null)
+assert_eq "3" "$count" "an empty entry must not become a player"
 teardown
 
-setup "seed_player_list writes whitelist entries without an op level"
-out=$(cd "$ROOT" && bash -c "
-  . '$INSTALL_DIR/bin/common.sh'
-  SERVER_DIR='$SERVER_DIR'
-  $(sed -n '/^seed_player_list()/,/^}/p' "$REPO/server/bin/bootstrap.sh")
-  seed_player_list whitelist.json 'Alice'
-  cat '$SERVER_DIR/whitelist.json'
-" 2>&1)
-assert_contains "$out" '"name":"Alice"' "name written"
-assert_not_contains "$out" 'level' "whitelist entries have no level"
+setup "ops are seeded with an op level, whitelist entries without one" \
+  'SERVER_OPS="Alice"' 'SERVER_WHITELIST_PLAYERS="Bob"'
+run_script seed-players.sh
+assert_contains "$(cat "$SERVER_DIR/ops.json")" '"level":4' "ops need a level"
+assert_not_contains "$(cat "$SERVER_DIR/whitelist.json")" "level" "whitelist entries do not"
 teardown
 
-setup "seed_player_list leaves an existing file alone"
-echo '[{"uuid":"","name":"Existing"}]' > "$SERVER_DIR/ops.json"
-out=$(cd "$ROOT" && bash -c "
-  . '$INSTALL_DIR/bin/common.sh'
-  SERVER_DIR='$SERVER_DIR'
-  $(sed -n '/^seed_player_list()/,/^}/p' "$REPO/server/bin/bootstrap.sh")
-  seed_player_list ops.json 'Alice'
-  cat '$SERVER_DIR/ops.json'
-" 2>&1)
-assert_contains "$out" "Existing" "in-game /op changes must not be clobbered"
-assert_not_contains "$out" "Alice" "and the seed must not be re-applied"
+setup "seeding never clobbers a list the server owns" 'SERVER_OPS="Alice"'
+# Once the file exists, in-game /op owns it. Overwriting on a later boot would
+# silently undo every change made since the deploy.
+printf '[{"uuid":"u","name":"Existing","level":4}]' > "$SERVER_DIR/ops.json"
+run_script seed-players.sh
+ops=$(cat "$SERVER_DIR/ops.json")
+assert_contains "$ops" "Existing" "in-game changes must survive"
+assert_not_contains "$ops" "Alice" "and the seed must not be re-applied"
 teardown
 
-setup "seed_player_list does nothing for an empty list"
-out=$(cd "$ROOT" && bash -c "
-  . '$INSTALL_DIR/bin/common.sh'
-  SERVER_DIR='$SERVER_DIR'
-  $(sed -n '/^seed_player_list()/,/^}/p' "$REPO/server/bin/bootstrap.sh")
-  seed_player_list ops.json ''
-  ls '$SERVER_DIR'
-" 2>&1)
-assert_not_contains "$out" "ops.json" "no file should be created"
+setup "seeding does nothing for an empty list"
+run_script seed-players.sh
+assert_eq "0" "$RC" "exit code"
+assert_no_file "$SERVER_DIR/ops.json" "no file should be created"
+assert_no_file "$SERVER_DIR/whitelist.json" "and none for the whitelist either"
+teardown
+
+setup "a whitelist added long after the first boot still takes effect" \
+  'SERVER_WHITELIST_PLAYERS="Alice,Bob"'
+# The case this script exists for: bootstrap.sh ran once, weeks ago, with no
+# whitelist configured. Adding one now has to work without rebuilding.
+run_script seed-players.sh
+assert_file "$SERVER_DIR/whitelist.json" "the list should appear on this boot"
+assert_contains "$(cat "$SERVER_DIR/whitelist.json")" "Bob" "both names"
+teardown
+
+setup "seeding survives a missing server directory" 'SERVER_OPS="Alice"'
+rm -rf "$SERVER_DIR"
+run_script seed-players.sh
+assert_eq "0" "$RC" "must not fail the boot"
 teardown
 
 setup "mc version shows both the installed and the configured version" \

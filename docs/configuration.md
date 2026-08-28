@@ -51,7 +51,7 @@ Related, with more context than a reference entry can carry:
 | [`data_volume_gb`](#data_volume_gb) | `number` | `20` | Persistent volume for the world, backups and mods. |
 | [`server_mods`](#server_mods) | `list(string)` | `["lithium", "ferrite-core", "krypton"]` | Fabric mods to install, reconciled against the mods directory on every boot: entries added here are... |
 | [`java_heap_mb`](#java_heap_mb) | `number` | `0` | Java heap size in MB. |
-| [`java_package`](#java_package) | `string` | `"java-21-amazon-corretto-headless"` | JDK package to install. |
+| [`java_package`](#java_package) | `string` | `"java-25-amazon-corretto-headless"` | JDK package to install. |
 
 **Addressing**
 
@@ -74,6 +74,7 @@ Related, with more context than a reference entry can carry:
 | [`discord_public_key`](#discord_public_key) | `string` | **required** | Public key from the General Information page of the Discord application. |
 | [`discord_webhook_url`](#discord_webhook_url) | `string` | `""` | Channel webhook the server posts status messages to. |
 | [`discord_bot_username`](#discord_bot_username) | `string` | `"Minecraft Server"` | Display name on webhook messages. |
+| [`endpoint_type`](#endpoint_type) | `string` | `"function_url"` | How Discord reaches the Lambda. |
 | [`allow_stop_command`](#allow_stop_command) | `bool` | `true` | Whether /stop is available at all. |
 | [`discord_stop_role_ids`](#discord_stop_role_ids) | `list(string)` | `[]` | Discord role IDs allowed to run /stop, when it is enabled. |
 | [`discord_allowed_role_ids`](#discord_allowed_role_ids) | `list(string)` | `[]` | Discord role IDs allowed to run the commands. |
@@ -86,6 +87,7 @@ Related, with more context than a reference entry can carry:
 | [`minecraft_version`](#minecraft_version) | `string` | `"latest"` | Minecraft version, or latest for the newest stable release Fabric supports. |
 | [`fabric_loader_version`](#fabric_loader_version) | `string` | `"latest"` | Fabric loader version, or latest for the newest stable one. |
 | [`server_jar_url`](#server_jar_url) | `string` | `""` | Direct download URL for a server jar. |
+| [`stop_after_provisioning`](#stop_after_provisioning) | `bool` | `false` | Whether the first boot ends with the instance powered off rather than with a server running. |
 | [`idle_timeout_minutes`](#idle_timeout_minutes) | `number` | `15` | Minutes with no players before the server saves, backs up and powers the instance off. |
 | [`max_uptime_hours`](#max_uptime_hours) | `number` | `0` | Hard cap on a single session, as a runaway-cost guard. |
 | [`shutdown_on_crash`](#shutdown_on_crash) | `bool` | `true` | Power the instance off if the server exits unexpectedly, so a crash cannot quietly bill for hours. |
@@ -97,8 +99,8 @@ Related, with more context than a reference entry can carry:
 | [`server_simulation_distance`](#server_simulation_distance) | `number` | `10` | Simulation distance in chunks. |
 | [`server_online_mode`](#server_online_mode) | `bool` | `true` | Require Mojang authentication. |
 | [`server_whitelist`](#server_whitelist) | `bool` | `false` | Enable the whitelist. |
-| [`server_ops`](#server_ops) | `list(string)` | `[]` | Minecraft usernames to make operators on a fresh install. |
-| [`server_whitelist_players`](#server_whitelist_players) | `list(string)` | `[]` | Minecraft usernames to seed the whitelist with on a fresh install. |
+| [`server_ops`](#server_ops) | `list(string)` | `[]` | Minecraft usernames to make server operators. |
+| [`server_whitelist_players`](#server_whitelist_players) | `list(string)` | `[]` | Minecraft usernames to seed the whitelist with. |
 
 **Backups**
 
@@ -190,6 +192,10 @@ Persistent volume for the world, backups and mods. Survives instance
 replacement. Counts against the same 30 GB free-tier EBS budget as
 root_volume_gb.
 
+Growing this is applied in place, and the filesystem is grown to match on
+the next boot -- so raise it, apply, then /stop and /start. It can only be
+grown: EBS will not shrink a volume, and neither will XFS.
+
 ### `server_mods`
 
 `list(string)` · default `["lithium", "ferrite-core", "krypton"]`
@@ -228,9 +234,25 @@ Java heap size in MB. 0 sizes it from the memory of the instance, leaving 1 GB f
 
 ### `java_package`
 
-`string` · default `"java-21-amazon-corretto-headless"`
+`string` · default `"java-25-amazon-corretto-headless"`
 
-JDK package to install. Minecraft 1.20.5 and later need Java 21.
+JDK package to install.
+
+Minecraft raises its Java requirement periodically and Fabric fails hard on
+a JVM that is too old: the server exits at once with
+UnsupportedClassVersionError rather than starting degraded. The default
+tracks the newest Corretto LTS in Amazon Linux 2023, which runs every older
+Minecraft too -- the JVM is backward compatible, so there is no reason to
+pin this lower than the newest release you might install.
+
+Class file versions, if you have to read one of those errors: 61 is Java
+17, 65 is Java 21, 69 is Java 25.
+
+Unlike almost everything else here, changing this does not take effect on
+the next boot: packages are installed by bootstrap.sh, which cloud-init
+runs once. On a live instance, apply and then re-run it by hand --
+`sudo mc update && sudo /opt/minecraft/bin/bootstrap.sh` -- or replace the
+instance. The world is on its own volume and survives either.
 
 
 ## Addressing
@@ -273,6 +295,16 @@ TTL for the A record. Keep it short so a restart propagates quickly.
 `number` · default `25565`
 
 Port the server listens on.
+
+Changing this after the first boot needs one manual step. The security
+group and the address the bot reports both follow immediately, but the port
+the server actually binds lives in server.properties, which is written once
+and then left alone so hand edits survive. Until you edit it, the bot
+advertises a port nothing is listening on:
+
+  sudo mc maintenance-stop
+  sudo sed -i 's/^server-port=.*/server-port=<new>/' /srv/minecraft/server/server.properties
+  sudo mc start
 
 ### `allowed_cidrs`
 
@@ -320,6 +352,28 @@ Channel webhook the server posts status messages to. Leave empty to disable noti
 `string` · default `"Minecraft Server"`
 
 Display name on webhook messages.
+
+### `endpoint_type`
+
+`string` · default `"function_url"`
+
+Accepted values: `function_url`, `api_gateway`
+
+How Discord reaches the Lambda.
+
+  function_url - a Lambda function URL. Simpler, free, and nothing else to
+                 provision. The default, and right for most accounts.
+  api_gateway  - an HTTP API in front of the same Lambda. Use this when a
+                 function URL answers every request with 403
+                 AccessDeniedException even though its resource policy
+                 allows public access -- some accounts refuse to serve
+                 public function URLs at all, and no amount of fixing the
+                 policy changes that. Free for the first million requests a
+                 month for twelve months, then about $1 per million; this
+                 stack makes a handful of requests a day.
+
+Switching changes the URL, so the new one has to be pasted into
+Interactions Endpoint URL on the Discord application page again.
 
 ### `allow_stop_command`
 
@@ -387,6 +441,28 @@ Fabric loader version, or latest for the newest stable one.
 `string` · default `""`
 
 Direct download URL for a server jar. Set this to run Paper, Purpur or vanilla instead of Fabric; it overrides the version settings above.
+
+### `stop_after_provisioning`
+
+`bool` · default `false`
+
+Whether the first boot ends with the instance powered off rather than with
+a server running.
+
+An EC2 instance cannot be created stopped, so `terraform apply` always boots
+it once -- that boot is what formats the world volume, installs Java and
+fetches Fabric. What it does next is the choice here.
+
+  false - carry on and start the server. The instance is joinable straight
+          away, and idles out normally if nobody comes. Convenient, and
+          the reason it is the default.
+  true  - power off once provisioning is done. `terraform apply` then costs
+          about four minutes of instance time and leaves nothing running or
+          reachable. The first /start takes ninety seconds like any other.
+
+Worth turning on if you apply from CI, apply often, or would rather nothing
+ever came up without you asking for it. Only the first boot is affected;
+afterwards the server starts on every boot as usual.
 
 ### `idle_timeout_minutes`
 
@@ -456,19 +532,46 @@ Require Mojang authentication. Leave this true unless you know exactly why you a
 
 `bool` · default `false`
 
-Enable the whitelist. Strongly recommended when the port is open to the internet.
+Enable the whitelist.
+
+Strongly recommended: allowed_cidrs defaults to the whole internet, so
+without this the only thing between your world and a stranger who finds the
+address is Mojang authentication -- which proves who somebody is, not that
+they were invited.
+
+Turning this on requires at least one name in server_whitelist_players, or
+the apply is refused: an empty enforced whitelist locks out everybody
+including you.
 
 ### `server_ops`
 
 `list(string)` · default `[]`
 
-Minecraft usernames to make operators on a fresh install. Ignored once ops.json exists.
+Minecraft usernames to make server operators.
+
+This is what lets moderation happen in the game rather than in Terraform.
+An operator can run /whitelist add, /whitelist remove, /ban, /kick and /op
+from the chat box, so the config only has to get the first person in --
+everybody after that is somebody else's problem, at the time it comes up,
+without an apply or an SSH session.
+
+Seeded into ops.json on any boot where that file does not yet exist, so
+setting this after the first deploy still works. Once the file exists the
+in-game commands own it and this value is ignored, which is why an /op
+granted at 2am is not quietly revoked by the next restart.
 
 ### `server_whitelist_players`
 
 `list(string)` · default `[]`
 
-Minecraft usernames to seed the whitelist with on a fresh install.
+Minecraft usernames to seed the whitelist with.
+
+Only needs to contain enough people to get started -- realistically you,
+plus anyone in server_ops. Operators add the rest with /whitelist add in
+game.
+
+Seeded into whitelist.json on any boot where that file does not yet exist,
+exactly like server_ops, and ignored from then on.
 
 
 ## Backups

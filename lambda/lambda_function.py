@@ -1,9 +1,14 @@
 """Discord interactions endpoint that starts and stops the Minecraft EC2 instance.
 
-Exposed through a Lambda Function URL, which Discord calls directly as the
-application's "Interactions Endpoint URL". Discord expects a reply within three
-seconds, so every command answers immediately (response type 4) and does its
-work inline -- the EC2 and SSM calls here are all sub-second.
+Reached through a Lambda function URL, or an API Gateway HTTP API where the
+account will not serve a public function URL. Either way Discord calls it
+directly as the application's "Interactions Endpoint URL", and the event looks
+the same: API Gateway's 2.0 payload format supplies the same lowercase headers,
+body and isBase64Encoded fields, so neither is a special case below.
+
+Discord expects a reply within three seconds, so every command answers
+immediately (response type 4) and does its work inline -- the EC2 and SSM calls
+here are all sub-second.
 
 Commands:
     /start    boot the instance if it is stopped
@@ -46,6 +51,12 @@ ALLOWED_ROLE_IDS = _role_set("ALLOWED_ROLE_IDS")
 # ssm:SendCommand permission when the command is off, so this is a second lock
 # on the same door rather than the only one.
 ALLOW_STOP_COMMAND = os.environ.get("ALLOW_STOP_COMMAND", "true").lower() == "true"
+
+# Whether a channel webhook is configured. Only the instance can post "Server
+# is up", and only if it has somewhere to post it -- so without this the reply
+# to /start would promise a message that is never coming, and players would sit
+# waiting for it instead of running /status.
+NOTIFICATIONS_ENABLED = os.environ.get("NOTIFICATIONS_ENABLED", "false").lower() == "true"
 STOP_ROLE_IDS = _role_set("STOP_ROLE_IDS")
 IDLE_TIMEOUT_MINUTES = os.environ.get("IDLE_TIMEOUT_MINUTES", "15")
 
@@ -109,6 +120,25 @@ def _is_authorised(body):
     return bool(ALLOWED_ROLE_IDS.intersection(member.get("roles") or []))
 
 
+def _idles_out():
+    """Whether the server really will stop on its own.
+
+    idle_timeout_minutes = 0 disables the automatic shutdown entirely, so any
+    message telling somebody to just wait would be sending them to wait for
+    something that is never going to happen.
+    """
+    return IDLE_TIMEOUT_MINUTES not in ("0", "")
+
+
+def _idle_sentence():
+    """"It shuts down on its own after N minutes", when that is true."""
+    if not _idles_out():
+        return ""
+    return " It shuts down on its own once nobody has been online for {} minutes.".format(
+        IDLE_TIMEOUT_MINUTES
+    )
+
+
 def _stop_refusal(body):
     """Why this member may not stop the server, or None if they may.
 
@@ -117,24 +147,12 @@ def _stop_refusal(body):
     telling someone the wrong one sends them to argue with the wrong person.
     """
     if not ALLOW_STOP_COMMAND:
-        if IDLE_TIMEOUT_MINUTES in ("0", ""):
-            return "Stopping the server from Discord is disabled here."
-        return (
-            "Stopping the server from Discord is disabled here. It shuts down "
-            "on its own once nobody has been online for {} minutes.".format(
-                IDLE_TIMEOUT_MINUTES
-            )
-        )
+        return "Stopping the server from Discord is disabled here." + _idle_sentence()
 
     if STOP_ROLE_IDS:
         member = body.get("member") or {}
         if not STOP_ROLE_IDS.intersection(member.get("roles") or []):
-            return (
-                "Only server admins can stop the server. It shuts down on its "
-                "own once nobody has been online for {} minutes.".format(
-                    IDLE_TIMEOUT_MINUTES
-                )
-            )
+            return "Only server admins can stop the server." + _idle_sentence()
 
     return None
 
@@ -203,9 +221,14 @@ def _cmd_start():
         return _reply("Server is already running.{}".format(suffix))
     if state == "stopped":
         ec2.start_instances(InstanceIds=[INSTANCE_ID])
+        if NOTIFICATIONS_ENABLED:
+            return _reply(
+                "Starting the server. It usually takes a couple of minutes to accept "
+                "connections -- you will get a message here when it is ready."
+            )
         return _reply(
             "Starting the server. It usually takes a couple of minutes to accept "
-            "connections -- you will get a message here when it is ready."
+            "connections -- run /status to check on it."
         )
     if state in ("pending", "stopping", "shutting-down"):
         return _reply(
@@ -236,9 +259,14 @@ def _cmd_stop():
         # SSM agent takes another few seconds to register. Say so plainly
         # instead of reporting a generic failure.
         if _error_code(err) == "InvalidInstanceId":
+            tail = (
+                ", or let it shut down on its own when nobody is playing."
+                if _idles_out()
+                else "."
+            )
             return _reply(
                 "The server is booting and cannot be reached yet. Try again in a "
-                "minute, or let it shut down on its own when nobody is playing."
+                "minute" + tail
             )
         raise
 

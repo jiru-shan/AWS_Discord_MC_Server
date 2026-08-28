@@ -11,7 +11,8 @@
                                              │ │ signed POST
                                              │ ▼
                      ┌───────────────────────┼──────────────────┐
-                     │ Lambda (Function URL) │                  │
+                     │ Lambda                │                  │
+                     │   (function URL, or an HTTP API)         │
                      │   verify Ed25519 signature               │
                      │   describe / start instance              │
                      │   SendCommand for a graceful stop        │
@@ -25,6 +26,9 @@
    │            ↓                                                 │
    │  minecraft.service                                           │
    │    ExecStartPre  announce-address.sh   publish the address   │
+   │                  seed-players.sh       ops / whitelist       │
+   │                  update-server-jar.sh  match minecraft_version│
+   │                  install-mods.js       match server_mods     │
    │    ExecStart     servermanager.js  ──► java -jar server.jar  │
    │                     watches the log, counts players          │
    │    ExecStopPost  on-stop.sh   backup to S3, then shutdown -h │
@@ -88,6 +92,31 @@ join — chat lines read `]: <Name> message` and fail the anchor.
 Lines are read through `readline` rather than by testing raw chunks. stdout
 arrives in arbitrary pieces, and a chunk boundary landing mid-line silently
 drops the event — a bug the original had.
+
+### The boot reconciles, it does not install
+
+`bootstrap.sh` runs once, from cloud-init, and never again. Anything that only
+happened there would be frozen at whatever it was on the day the instance was
+created -- so a setting changed months later would appear to do nothing, with
+no error to explain it.
+
+Everything that can drift is therefore reconciled on **every** boot, before the
+server starts, by an `ExecStartPre` that compares desired against actual:
+
+| Script | Reconciles | Skips when |
+| --- | --- | --- |
+| `seed-players.sh` | `ops.json`, `whitelist.json` | the file exists — in-game `/op` owns it from then on |
+| `update-server-jar.sh` | the jar against `minecraft_version` | versions already match, or it is `latest` |
+| `install-mods.js` | `mods/` against `server_mods` | each jar is present and its checksum matches |
+
+The order matters: the jar is settled before the mods are resolved, so a mod is
+never resolved against a Minecraft version other than the one about to run.
+
+None of the three may fail the boot. Each is invoked with a `-` prefix and
+returns 0 whatever happens, because every one of them is an improvement to a
+server that would otherwise still work. A missing optimisation is a bad
+evening; a server that will not start is a bad week, on a box whose only way in
+is SSM.
 
 ### A sentinel file decides whether to power off
 
@@ -187,10 +216,19 @@ security benefit without the privilege plumbing.
 | `ssm:SendCommand`       | the one instance, `AWS-RunShellScript` only     |
 | logs                    | its own log group                               |
 
-The Function URL is `AUTHORIZATION_NONE` because Discord calls it with no AWS
-credentials. Every request is authenticated by its Ed25519 signature before
-anything else happens; unsigned requests get a `401` and never reach the command
-handlers.
+`ssm:SendCommand` is withheld entirely when `allow_stop_command = false`, so a
+deployment where nobody may end a session cannot have one ended by a bug in the
+handler either.
+
+The endpoint is public because Discord calls it with no AWS credentials: a
+function URL with `AUTHORIZATION_NONE`, or an API Gateway HTTP API when
+`endpoint_type = "api_gateway"`. Either way every request is authenticated by
+its Ed25519 signature before anything else happens, and unsigned requests get a
+`401` without reaching the command handlers.
+
+The two are interchangeable because API Gateway's 2.0 payload format hands the
+Lambda the same lowercase headers, `body` and `isBase64Encoded` a function URL
+does, so neither is a special case in the handler.
 
 ## What is not here
 
@@ -199,6 +237,8 @@ handlers.
 - **No RCON.** `mc console` writes to a FIFO the manager forwards to stdin,
   which is enough for admin commands and needs no port or password.
 - **No player-facing web UI.** Discord is the interface.
+- **No mod dependency resolution.** `server_mods` installs what you list; if a
+  mod needs the Fabric API, list that too.
 - **No EBS snapshots.** Backups are tarballs in S3, which are portable and easy
   to inspect. Add a DLM policy on the data volume if you want block-level
   snapshots too.

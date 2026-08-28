@@ -1,8 +1,14 @@
 # On-demand Minecraft server, started from Discord
 
+[![tests](https://github.com/jiru-shan/AWS_Discord_MC_Server/actions/workflows/test.yml/badge.svg)](https://github.com/jiru-shan/AWS_Discord_MC_Server/actions/workflows/test.yml)
+
 A Minecraft server that only exists while people are playing it. Someone types
-`/start` in Discord, the server boots and posts its address in the channel; when
-the last player leaves it saves, backs up and powers itself off.
+`/start` in Discord and the server boots; when the last player leaves it saves,
+backs up and powers itself off.
+
+Point a [channel webhook](docs/notifications.md) at it and it announces itself
+too — "Server is up. Connect at ..." on the way in, "Server stopped due to
+inactivity." on the way out.
 
 You pay for the hours actually played, which for a group that plays a few
 evenings a week is roughly the difference between a few dollars a month and
@@ -115,9 +121,17 @@ shows what is currently registered. If it fails, or the commands do not appear,
 [docs/discord-setup.md](docs/discord-setup.md#9-register-the-slash-commands)
 covers this step in full, including what each of the two credentials is for.
 
-**6. Type `/start` in Discord.** The first boot installs Java and downloads the
-Minecraft server, so give it about five minutes. Later boots take ninety
-seconds.
+**6. Type `/start` in Discord.**
+
+Note that `terraform apply` has already booted the instance once — an EC2
+instance cannot be created stopped — and that boot installs Java, formats the
+world volume and fetches Fabric. So the server is most likely up already, and
+`/start` will tell you so. If nobody joins it shuts itself down after
+`idle_timeout_minutes`, and every later `/start` takes about ninety seconds.
+
+If you would rather `terraform apply` left nothing running, set
+`stop_after_provisioning = true`: the instance still boots once to install
+everything, then powers off without starting the server.
 
 ## The commands
 
@@ -212,7 +226,7 @@ Three levers:
 ## Configuration
 
 Every setting lives in `terraform/terraform.tfvars`. **[The configuration
-reference](docs/configuration.md) documents all 46 of them** — type, default,
+reference](docs/configuration.md) documents every one of them** — type, default,
 and the accepted values where a setting only takes a few. It is generated from
 `terraform/variables.tf`, and a test fails the build if it drifts, so it always
 describes what the code actually accepts.
@@ -224,9 +238,13 @@ The ones people change first:
 | `instance_type`                 | `t4g.small`      | Free-tier eligible. Architecture and AMI follow automatically  |
 | `minecraft_version`             | `latest`         | Pin it to upgrade deliberately — [how](#upgrading-minecraft)   |
 | `idle_timeout_minutes`          | `15`             | Minutes of nobody online before shutdown                      |
+| `stop_after_provisioning`       | `false`          | `true` means `terraform apply` leaves nothing running          |
 | `addressing_mode`               | `elastic_ip`     | Or `route53` if you have a domain — [setup](docs/route53-setup.md) |
 | `server_mods`                   | 3 optimisation mods | Fabric mods, reconciled on every boot — [guide](docs/mods.md) |
-| `server_whitelist`              | `false`          | Turn on if the port is open to the internet                   |
+| `discord_webhook_url`           | `""`             | Post up/down messages to a channel — [setup](docs/notifications.md) |
+| `server_whitelist`              | `true` recommended | The port is open to the internet — [why](docs/operations.md#whitelisting-and-moderation) |
+| `server_ops`                    | `[]`             | Operators; they moderate in-game, so config only seeds the first |
+| `endpoint_type`                 | `function_url`   | Switch to `api_gateway` if the endpoint returns 403 — [why](docs/troubleshooting.md#the-endpoint-url-returns-403-accessdeniedexception) |
 | `allow_stop_command`            | `true`           | `false` leaves idle shutdown as the only way off — [below](#who-can-stop-the-server) |
 | `discord_stop_role_ids`         | `[]`             | Restrict `/stop` to admins, leaving the rest open              |
 | `discord_allowed_role_ids`      | `[]`             | Restrict who may use the commands at all                      |
@@ -412,6 +430,7 @@ sudo mc status
 | [Discord setup](docs/discord-setup.md) | The manual half: creating the application, the bot, the webhook, and registering the commands. Ten steps. |
 | [Configuration reference](docs/configuration.md) | Every setting, with type, default and accepted values. Generated from `variables.tf`. |
 | [Route 53 setup](docs/route53-setup.md) | Running on `mc.example.com` instead of an IP: hosted zones, delegation, TTLs, costs. |
+| [Notifications](docs/notifications.md) | Getting "Server is up" and "Server stopped due to inactivity" posted to a channel. Optional, one minute to set up. |
 | [Mods](docs/mods.md) | Adding mods, what players need, mod and server configuration, tuning for more players. |
 | [Operations](docs/operations.md) | Day to day: shells, backups, restores, applying changes, Minecraft upgrades, watching costs. |
 | [Architecture](docs/architecture.md) | How the pieces fit and why they are arranged this way. |

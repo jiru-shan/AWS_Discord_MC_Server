@@ -228,6 +228,88 @@ sudo mc upgrade --yes
 sudo mc start && sudo mc logs -f
 ```
 
+## Whitelisting and moderation
+
+`allowed_cidrs` defaults to the whole internet, so anyone who learns the
+address can try to join. Mojang authentication proves who somebody is; it does
+not prove they were invited. A whitelist does.
+
+```hcl
+server_whitelist         = true
+server_whitelist_players = ["YourMinecraftName", "AFriend"]
+server_ops               = ["YourMinecraftName"]
+```
+
+`terraform apply`, then `/stop` and `/start`.
+
+Turning the whitelist on with nobody listed is refused at plan time rather than
+producing a server nobody can enter -- including you.
+
+### Then do the rest in game
+
+`server_ops` is the setting that means you do not have to come back here. An
+operator has the moderation commands in the chat box:
+
+| In game | What it does |
+| --- | --- |
+| `/whitelist add <player>` | let somebody in |
+| `/whitelist remove <player>` | stop letting them in |
+| `/whitelist list` | who is allowed |
+| `/kick <player> [reason]` | end this session |
+| `/ban <player> [reason]` | and every future one |
+| `/pardon <player>` | undo a ban |
+| `/op <player>` | make somebody else a moderator |
+
+So the Terraform lists only have to get the first person in. Everything after
+that happens at the time it comes up, by whoever is online, with no apply and
+no shell.
+
+Without an in-game operator you would be editing `whitelist.json` over SSM
+every time a friend wanted to join, which is the kind of chore that ends with
+the whitelist being turned off.
+
+### How the two settings interact
+
+Both lists are **seeded, not enforced**. On any boot where `ops.json` or
+`whitelist.json` does not exist, it is written from the Terraform value. Once
+the file exists it is never touched again.
+
+That means:
+
+- Adding `server_ops` after the first deploy still works -- the file did not
+  exist, so the next boot creates it. This is not bootstrap-only.
+- An `/op` granted in game at 2am survives every later restart. Terraform will
+  not quietly revoke it.
+- Changing the Terraform value after the file exists does **nothing**. Use the
+  in-game commands, or delete the file and restart to re-seed from config:
+
+  ```bash
+  sudo mc maintenance-stop
+  sudo rm /srv/minecraft/server/whitelist.json
+  sudo mc start
+  ```
+
+### If you lock yourself out
+
+Being off your own whitelist is recoverable -- the server console is not
+subject to it:
+
+```bash
+aws ssm start-session --target $(terraform -chdir=terraform output -raw instance_id)
+sudo mc console "whitelist add YourMinecraftName"
+sudo mc console "op YourMinecraftName"
+sudo mc logs                      # the reply appears here
+```
+
+`mc console` runs a command as the server console, which outranks any operator.
+
+## Knowing when it stops
+
+By default the server shuts itself down silently. Set `discord_webhook_url` and
+it posts "Server stopped due to inactivity." to a channel, along with crash and
+failed-start messages that are otherwise easy to miss for days. One minute to
+set up: [notifications.md](notifications.md).
+
 ## Watching costs
 
 ```bash

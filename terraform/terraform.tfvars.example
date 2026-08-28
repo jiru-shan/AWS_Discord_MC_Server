@@ -28,12 +28,6 @@ instance_type = "t4g.small"
 # t4g.small hold more than a couple of people. Set to [] to run vanilla.
 server_mods = ["lithium", "ferrite-core", "krypton"]
 
-# /stop ends the session for everyone playing. On a shared server, either take
-# it away entirely and let the server idle out on its own:
-#   allow_stop_command = false
-# or leave it to the people who run the server:
-#   discord_stop_role_ids = ["123456789012345678"]
-
 # --------------------------------------------------------------------------
 # How players reach it
 #
@@ -48,18 +42,50 @@ addressing_mode = "elastic_ip"
 # route53_record_name = "mc.example.com"
 
 # --------------------------------------------------------------------------
+# How Discord reaches the Lambda
+#
+# function_url is a Lambda function URL: nothing extra to provision, free, and
+# right for most accounts. Leave it alone unless you hit the failure below.
+#
+# Some AWS accounts refuse to serve a public function URL at all. The symptom
+# is every command answering "The application did not respond", the endpoint
+# returning 403 AccessDeniedException, and no invocation ever recorded in
+# CloudWatch -- with a resource policy that is already correct, so adding the
+# permission again changes nothing. If that is happening, switch to an HTTP API
+# in front of the same Lambda:
+#
+#   endpoint_type = "api_gateway"
+#
+# It stays inside the free tier at this volume. Note the URL changes, so paste
+# the new one into Interactions Endpoint URL and save again. Full diagnosis in
+# docs/troubleshooting.md.
+# --------------------------------------------------------------------------
+
+endpoint_type = "function_url"
+
+# --------------------------------------------------------------------------
 # Discord notifications
 #
 # Channel settings -> Integrations -> Webhooks -> New Webhook -> Copy URL.
 # This is a credential: treat it like a password.
 # --------------------------------------------------------------------------
 
+# Without this the server starts and stops silently. With it you get "Server is
+# up", "Server stopped due to inactivity", and crash reports posted to a
+# channel. Channel settings -> Integrations -> Webhooks -> New Webhook -> Copy.
+# Full list of messages and setup: docs/notifications.md
 discord_webhook_url  = ""
 discord_bot_username = "Minecraft Server"
 
-# Restrict who can start and stop the server. Right-click a role in Discord with
+# Restrict who can use the commands at all. Right-click a role in Discord with
 # Developer Mode on to copy its ID. Empty means anyone in the server may.
 # discord_allowed_role_ids = ["123456789012345678"]
+
+# /stop ends the session for everyone currently playing. On a shared server,
+# either take it away entirely and let the server idle out on its own:
+#   allow_stop_command = false
+# or leave it to the people who run the server:
+#   discord_stop_role_ids = ["123456789012345678"]
 
 # --------------------------------------------------------------------------
 # The server itself
@@ -74,9 +100,24 @@ server_max_players = 10
 # This is what keeps the bill proportional to time actually played.
 idle_timeout_minutes = 15
 
-# Strongly recommended while the port is open to the internet.
+# An EC2 instance cannot be created stopped, so `terraform apply` always boots
+# it once -- that boot formats the world volume, installs Java and fetches
+# Fabric. false then carries on and starts the server, which is convenient and
+# idles out normally. true powers the instance off instead, so an apply leaves
+# nothing running or reachable and the first /start behaves like any other.
+stop_after_provisioning = false
+
+# The port is open to the whole internet by default, so a whitelist is the
+# difference between "friends only" and "anyone who finds the IP". Turning it on
+# requires at least one name, or the apply is refused -- an empty whitelist
+# locks out everybody, including you.
+#
+# server_ops is the one that saves you coming back here: an operator can run
+# /whitelist add, /ban and /kick in the game, so this only has to get the first
+# person in. Both lists are seeded on the first boot that finds the file
+# missing, and are ignored afterwards -- in-game changes always win.
 # server_whitelist         = true
-# server_whitelist_players = ["YourMinecraftName"]
+# server_whitelist_players = ["YourMinecraftName", "AFriend"]
 # server_ops               = ["YourMinecraftName"]
 
 # --------------------------------------------------------------------------

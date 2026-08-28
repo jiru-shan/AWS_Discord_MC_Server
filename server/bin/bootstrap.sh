@@ -245,42 +245,10 @@ pause-when-empty-seconds=0
 PROPS
 fi
 
-# ops.json / whitelist.json are only seeded on a fresh install; after that the
-# in-game /op and /whitelist commands own them.
-#
-# The splitting and trimming is done in the shell rather than inside a jq
-# program, so jq is only ever asked to encode one object at a time. That keeps
-# the part that can go wrong -- handling of spaces, empty entries and trailing
-# commas -- in code the tests can exercise directly.
-seed_player_list() {
-  local file="$1" names="$2" name entries=()
-  [ -n "$names" ] || return 0
-  [ -f "$SERVER_DIR/$file" ] && return 0
-
-  local IFS=','
-  read -ra raw <<< "$names"
-  unset IFS
-
-  for name in "${raw[@]}"; do
-    # Trim surrounding whitespace, then skip anything that was only whitespace.
-    name="${name#"${name%%[![:space:]]*}"}"
-    name="${name%"${name##*[![:space:]]}"}"
-    [ -n "$name" ] || continue
-
-    if [ "$file" = "ops.json" ]; then
-      entries+=("$(jq -nc --arg n "$name" --argjson l "${OP_LEVEL:-4}" \
-        '{uuid: "", name: $n, level: $l, bypassesPlayerLimit: false}')")
-    else
-      entries+=("$(jq -nc --arg n "$name" '{uuid: "", name: $n}')")
-    fi
-  done
-
-  [ ${#entries[@]} -gt 0 ] || return 0
-  log "seeding $file with ${#entries[@]} entries"
-  printf '[%s]\n' "$(IFS=,; echo "${entries[*]}")" > "$SERVER_DIR/$file"
-}
-seed_player_list ops.json "${SERVER_OPS:-}"
-seed_player_list whitelist.json "${SERVER_WHITELIST_PLAYERS:-}"
+# ops.json / whitelist.json. The logic lives in its own script because it also
+# has to run on every later boot: bootstrap.sh runs once, so a server_ops added
+# after the first deploy would otherwise never take effect.
+"$INSTALL_DIR/bin/seed-players.sh" || log "WARNING: could not seed the player lists"
 
 chown -R "$MC_USER:$MC_USER" "$DATA_MOUNT"
 
@@ -293,5 +261,18 @@ install -m 0644 "$INSTALL_DIR/payload/systemd/"*.service "$SYSTEMD_DIR/"
 systemctl daemon-reload
 systemctl enable minecraft-refresh.service minecraft.service
 
-log "bootstrap complete; starting the server"
-systemctl start --no-block minecraft.service
+if [ "${STOP_AFTER_PROVISION:-false}" = "true" ]; then
+  # Everything is installed; the operator asked not to be left with a running
+  # server they did not start. Scheduled a minute out rather than immediately,
+  # so cloud-init finishes and records this boot as complete -- a shutdown in
+  # the middle of it leaves the instance looking half-provisioned.
+  #
+  # minecraft.service is enabled either way, so the next boot starts the server
+  # normally. Only this one is different.
+  log "bootstrap complete; powering off in 1 minute without starting the server"
+  notify "Setup finished. The server is installed and the instance is off -- /start when you want to play."
+  shutdown -h +1
+else
+  log "bootstrap complete; starting the server"
+  systemctl start --no-block minecraft.service
+fi

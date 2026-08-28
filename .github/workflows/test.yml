@@ -1,0 +1,69 @@
+name: tests
+
+# Everything here runs without an AWS account, credentials, or any package
+# install: the Lambda has no dependencies, the on-instance scripts run against
+# stubs, and Terraform is only ever asked to validate.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Ed25519 verification, the Discord handler, the config reference
+        run: python -m unittest discover -s tests -v
+
+      - name: The idle-shutdown state machine
+        run: node --test tests/test_session.js
+
+      - name: The Fabric mod installer
+        run: node --test tests/test_mods.js
+
+      - name: The on-instance scripts
+        # Runs the real scripts against a stubbed AWS CLI, systemd and curl in a
+        # throwaway root. It refuses to start unless `shutdown` resolves to its
+        # stub, so it cannot power off the runner.
+        run: bash tests/shell/run.sh
+
+      - name: Syntax
+        run: |
+          for f in server/bin/*.sh server/bin/mc; do bash -n "$f"; done
+          for f in server/bin/*.js; do node --check "$f"; done
+          python -m py_compile lambda/*.py scripts/*.py
+
+      - name: The configuration reference is not stale
+        run: python scripts/generate_config_docs.py --check
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Format
+        run: terraform -chdir=terraform fmt -check -recursive
+
+      - name: Validate
+        # -backend=false so no credentials and no state are needed; this checks
+        # the configuration itself, which is all CI can usefully check.
+        run: |
+          terraform -chdir=terraform init -backend=false
+          terraform -chdir=terraform validate

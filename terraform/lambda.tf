@@ -44,6 +44,10 @@ resource "aws_lambda_function" "discord" {
       STOP_SCRIPT        = "/opt/minecraft/bin/request-stop.sh"
       ALLOWED_ROLE_IDS   = join(",", var.discord_allowed_role_ids)
 
+      # Whether a webhook exists to post "Server is up". Without this the reply
+      # to /start would promise a message that never arrives.
+      NOTIFICATIONS_ENABLED = tostring(var.discord_webhook_url != "")
+
       # /stop controls. The Lambda refuses the command on these alone; the IAM
       # policy separately withholds ssm:SendCommand when stop is disabled.
       ALLOW_STOP_COMMAND   = tostring(var.allow_stop_command)
@@ -63,6 +67,8 @@ resource "aws_lambda_function" "discord" {
 # the handler, and an unsigned request is answered with 401 before anything
 # else happens.
 resource "aws_lambda_function_url" "discord" {
+  count = local.use_api_gateway ? 0 : 1
+
   function_name      = aws_lambda_function.discord.function_name
   authorization_type = "NONE"
 }

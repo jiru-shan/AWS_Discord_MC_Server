@@ -32,6 +32,67 @@ aws lambda get-function-configuration --function-name minecraft-discord \
   --query 'Environment.Variables.DISCORD_PUBLIC_KEY'
 ```
 
+## Every command says "The application did not respond"
+
+Discord shows this whenever nothing answers within three seconds. The commands
+appearing in the menu tells you nothing: they are registered with the bot
+token, over a completely different path from the one that serves them.
+
+Work out whether the Lambda is being reached at all:
+
+```bash
+aws logs tail /aws/lambda/minecraft-discord --since 1h --region <region>
+```
+
+**Log lines appear.** The Lambda ran. Read the error there.
+
+**Nothing at all, ever.** Discord is not reaching it. Two causes, and they look
+identical from Discord:
+
+1. **The URL is in the wrong field.** It belongs in **General Information ->
+   Interactions Endpoint URL**. A Discord application also has an *Event
+   Webhooks URL*, and a channel webhook is a third thing entirely -- the one
+   you copy *from* for `discord_webhook_url`. In the wrong field it saves
+   happily and slash commands still have nowhere to go.
+
+2. **The endpoint is returning 403.** Check it directly:
+
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+     -H 'Content-Type: application/json' -d '{"type":1}' \
+     "$(terraform -chdir=terraform output -raw discord_interactions_endpoint_url)"
+   ```
+
+   `401` is the healthy answer -- the signature check rejecting an unsigned
+   request. `403` means AWS refused before your code ran; see below.
+
+## The endpoint URL returns 403 AccessDeniedException
+
+Some AWS accounts will not serve a public Lambda function URL at all. The
+symptom is a 403 with `x-amzn-ErrorType: AccessDeniedException`, no invocation
+recorded in CloudWatch, and a resource policy that is already correct --
+`AuthType: NONE` and a statement allowing `lambda:InvokeFunctionUrl` for
+principal `*`. Adding the permission again does not help, because the
+permission was never the problem.
+
+To confirm it is the account rather than this deployment, give any throwaway
+Lambda a public URL and call it. If that 403s too, nothing here is misconfigured.
+
+The fix is to stop using a function URL:
+
+```hcl
+endpoint_type = "api_gateway"
+```
+
+`terraform apply` replaces the function URL with an HTTP API in front of the
+same Lambda. The handler is unchanged -- API Gateway's 2.0 payload format hands
+it the same headers and body a function URL does. It stays inside the free tier
+at this volume.
+
+**The URL changes**, so paste the new
+`discord_interactions_endpoint_url` output into **Interactions Endpoint URL**
+and save again.
+
 ## The slash commands do not appear in Discord
 
 - **Registered globally?** Global commands take up to an hour. Re-run with

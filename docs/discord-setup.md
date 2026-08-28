@@ -146,6 +146,11 @@ discord_webhook_url = "https://discord.com/api/webhooks/..."
 Treat this like a password: anyone with the URL can post to that channel as your
 bot. Leave it as `""` to run without notifications.
 
+Without it the server starts and stops silently, so the first anyone knows
+about a shutdown is finding they cannot connect.
+[notifications.md](notifications.md) lists every message it sends and why this
+is a webhook rather than the bot posting.
+
 ## 7. Deploy, then come back
 
 ```bash
@@ -166,6 +171,11 @@ to check that you reject it. Saving succeeds only if both behave correctly.
 
 If it refuses to save, see
 [troubleshooting](troubleshooting.md#discord-will-not-accept-the-interactions-endpoint-url).
+
+Make sure it goes in **Interactions Endpoint URL** on **General Information**.
+The same page may also offer an *Event Webhooks URL*, and that is a different
+feature: a URL parked there saves without complaint and slash commands still go
+nowhere, which looks exactly like a broken Lambda.
 
 ## 9. Register the slash commands
 
@@ -200,7 +210,12 @@ python scripts/register_commands.py --list --guild <server ID>
 ## 10. Try it
 
 Type `/start` in the channel. You should get "Starting the server." within a
-second, and a webhook message with the address a few minutes later.
+second.
+
+What happens next depends on whether you did step 6. With a webhook configured
+the server posts its address to that channel once it is accepting connections.
+Without one nothing announces it — wait a couple of minutes and run `/status`
+or `/address`. The reply to `/start` tells you which of the two to expect.
 
 ---
 

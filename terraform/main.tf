@@ -62,6 +62,15 @@ locals {
   auto_heap_mb       = max(512, local.instance_memory_mb - local.os_reserve_mb)
   heap_mb            = var.java_heap_mb > 0 ? var.java_heap_mb : local.auto_heap_mb
 
+  use_api_gateway = var.endpoint_type == "api_gateway"
+
+  # Whichever endpoint was built. one() yields null for the branch that was not
+  # created, and coalesce skips nulls, so exactly one of these survives.
+  interactions_endpoint_url = coalesce(
+    one(aws_apigatewayv2_stage.discord[*].invoke_url),
+    one(aws_lambda_function_url.discord[*].function_url),
+  )
+
   use_route53    = var.addressing_mode == "route53"
   use_elastic_ip = var.addressing_mode == "elastic_ip"
 
@@ -129,6 +138,7 @@ locals {
     SERVER_JAR_URL        = var.server_jar_url
 
     IDLE_TIMEOUT_MINUTES = tostring(var.idle_timeout_minutes)
+    STOP_AFTER_PROVISION = tostring(var.stop_after_provisioning)
     MAX_UPTIME_HOURS     = tostring(var.max_uptime_hours)
     SHUTDOWN_ON_CRASH    = tostring(var.shutdown_on_crash)
     STOP_TIMEOUT_SECONDS = "120"
@@ -199,6 +209,11 @@ resource "terraform_data" "preconditions" {
     precondition {
       condition     = var.restore_from_s3 == "" || startswith(var.restore_from_s3, "s3://")
       error_message = "restore_from_s3 must be an s3:// URI."
+    }
+
+    precondition {
+      condition     = !var.server_whitelist || length(var.server_whitelist_players) > 0
+      error_message = "server_whitelist = true with an empty server_whitelist_players locks everyone out, including you. Add at least your own Minecraft username; you can add the rest in-game with /whitelist add."
     }
   }
 }

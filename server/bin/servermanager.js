@@ -24,6 +24,7 @@ const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
+const net = require('net');
 
 // Overridable so the behavioural tests can run outside /run.
 const RUN_DIR = process.env.RUN_DIR || '/run/minecraft';
@@ -345,19 +346,36 @@ function main() {
   // read-write so it never reports EOF when a writer disconnects.
   // --------------------------------------------------------------------------
 
+  let consoleStream = null;
   try {
     fs.mkdirSync(RUN_DIR, { recursive: true });
     if (!fs.existsSync(CONSOLE_FIFO)) {
       execFileSync('mkfifo', ['-m', '600', CONSOLE_FIFO]);
     }
-    readline
-      .createInterface({ input: fs.createReadStream(CONSOLE_FIFO, { flags: 'r+' }) })
-      .on('line', (line) => {
-        const command = line.trim();
-        if (!command || stopping) return;
-        log(`console: ${command}`);
-        child.stdin.write(`${command}\n`);
-      });
+
+    // O_NONBLOCK and a net.Socket, rather than fs.createReadStream, because of
+    // where the two do their reading. An fs stream reads on a libuv threadpool
+    // worker, and a blocking read(2) on a FIFO that never receives data never
+    // returns -- so that worker is stuck for the life of the process, and
+    // Node's exit path, which waits for the pool to drain, hangs with it.
+    //
+    // The symptom is the worst one this project has: the server dies, the exit
+    // handler runs to completion, and then process.exit() never returns. The
+    // unit stays "active", systemd never runs ExecStopPost, on-stop.sh never
+    // reads the sentinel, and the instance bills until somebody notices.
+    //
+    // A socket is polled through epoll and holds no worker. O_RDWR keeps the
+    // FIFO from reporting EOF every time a writer disconnects.
+    const fd = fs.openSync(CONSOLE_FIFO, fs.constants.O_RDWR | fs.constants.O_NONBLOCK);
+    consoleStream = new net.Socket({ fd, readable: true, writable: false });
+    consoleStream.on('error', (err) => log(`admin console error: ${err.message}`));
+
+    readline.createInterface({ input: consoleStream }).on('line', (line) => {
+      const command = line.trim();
+      if (!command || stopping) return;
+      log(`console: ${command}`);
+      child.stdin.write(`${command}\n`);
+    });
   } catch (err) {
     log(`admin console unavailable: ${err.message}`);
   }
@@ -403,6 +421,9 @@ function main() {
       notify('Server stopped.');
     }
 
+    // Nothing may keep this process alive once the server it supervises is
+    // gone: an exit that hangs is billed by the hour.
+    if (consoleStream) consoleStream.destroy();
     process.exit(crashed ? code || 1 : 0);
   });
 }

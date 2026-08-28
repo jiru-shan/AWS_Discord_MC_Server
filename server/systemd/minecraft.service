@@ -18,6 +18,13 @@ EnvironmentFile=/etc/minecraft/config.env
 # sudoers rule. servermanager.js drops to MC_UID/MC_GID for the Java process
 # itself, which is the part exposed to the internet.
 ExecStartPre=/opt/minecraft/bin/announce-address.sh
+# Seed ops.json / whitelist.json if they do not exist yet. Never overwrites,
+# so in-game /op and /whitelist changes always win.
+ExecStartPre=-/opt/minecraft/bin/seed-players.sh
+# Raising data_volume_gb grows the EBS volume but not the filesystem on it, so
+# the extra space would be invisible and the disk would fill anyway. xfs_growfs
+# only ever grows, and does nothing when there is nothing to do.
+ExecStartPre=-/usr/sbin/xfs_growfs /srv/minecraft
 # Bring the jar in line with minecraft_version before the mods are resolved
 # against it. Non-fatal: a failed update leaves the working jar in place.
 ExecStartPre=-/opt/minecraft/bin/update-server-jar.sh

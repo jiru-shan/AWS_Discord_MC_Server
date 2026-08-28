@@ -76,8 +76,11 @@ class ParsingVariablesTf(unittest.TestCase):
         self.assertIn("  elastic_ip - attach a static IP.", description)
 
     def test_quoted_descriptions_are_read(self):
+        # Most descriptions are heredocs; this covers the single-line quoted
+        # form, which the parser reads down a different path.
         self.assertEqual(
-            self.variables["server_port"]["description"], "Port the server listens on."
+            self.variables["discord_bot_username"]["description"],
+            "Display name on webhook messages.",
         )
 
     def test_variables_are_grouped_by_the_banners_in_the_file(self):

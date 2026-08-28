@@ -429,6 +429,98 @@ class TestStopCommandControls(unittest.TestCase):
         self.assertEqual(handler.ssm.commands, [])
 
 
+
+class TestStartReplyMatchesReality(unittest.TestCase):
+    """/start must not promise a message that nothing will send.
+
+    Only the instance can post "Server is up", and only when a channel webhook
+    is configured. Promising it unconditionally leaves people waiting for an
+    announcement that is never coming instead of running /status.
+    """
+
+    def _start(self, **env):
+        handler = _load_handler(**env)
+        handler.ec2 = FakeEc2()
+        handler.ssm = FakeSsm()
+        handler.ec2.state = "stopped"
+        response = handler.lambda_handler(
+            _event({"type": 2, "data": {"name": "start"}}), None
+        )
+        return handler, _content(response)
+
+    def test_with_a_webhook_it_promises_a_message(self):
+        handler, content = self._start(NOTIFICATIONS_ENABLED="true")
+        self.assertIn("message here when it is ready", content)
+        self.assertEqual(handler.ec2.started, [[INSTANCE_ID]])
+
+    def test_without_a_webhook_it_points_at_status_instead(self):
+        _, content = self._start(NOTIFICATIONS_ENABLED="false")
+        self.assertNotIn("message here", content)
+        self.assertIn("/status", content)
+
+    def test_the_safe_default_is_to_promise_nothing(self):
+        # An unset variable must not fall back to promising a message.
+        _, content = self._start(NOTIFICATIONS_ENABLED=None)
+        self.assertNotIn("message here", content)
+
+    def test_the_server_is_started_either_way(self):
+        handler, _ = self._start(NOTIFICATIONS_ENABLED="false")
+        self.assertEqual(handler.ec2.started, [[INSTANCE_ID]])
+
+
+class TestNoPromiseOfAnIdleShutdownThatCannotHappen(unittest.TestCase):
+    """idle_timeout_minutes = 0 disables the automatic shutdown entirely.
+
+    Every message that tells somebody to just wait has to check that first, or
+    it sends them to wait for something that is never going to happen.
+    """
+
+    def _refusal(self, **env):
+        handler = _load_handler(**env)
+        handler.ec2 = FakeEc2()
+        handler.ssm = FakeSsm()
+        handler.ec2.state = "running"
+        payload = {"type": 2, "data": {"name": "stop"}, "member": {"roles": ["999"]}}
+        return _content(handler.lambda_handler(_event(payload), None))
+
+    def test_disabled_stop_mentions_the_idle_shutdown_when_there_is_one(self):
+        content = self._refusal(ALLOW_STOP_COMMAND="false", IDLE_TIMEOUT_MINUTES="15")
+        self.assertIn("15 minutes", content)
+
+    def test_disabled_stop_stays_quiet_when_there_is_not(self):
+        content = self._refusal(ALLOW_STOP_COMMAND="false", IDLE_TIMEOUT_MINUTES="0")
+        self.assertIn("disabled", content)
+        self.assertNotIn("on its own", content)
+
+    def test_role_refusal_mentions_the_idle_shutdown_when_there_is_one(self):
+        content = self._refusal(STOP_ROLE_IDS="111", IDLE_TIMEOUT_MINUTES="20")
+        self.assertIn("20 minutes", content)
+
+    def test_role_refusal_stays_quiet_when_there_is_not(self):
+        # The branch that had the bug: it promised a shutdown unconditionally.
+        content = self._refusal(STOP_ROLE_IDS="111", IDLE_TIMEOUT_MINUTES="0")
+        self.assertIn("admins", content)
+        self.assertNotIn("on its own", content)
+
+    def test_the_booting_message_does_not_promise_one_either(self):
+        handler = _load_handler(IDLE_TIMEOUT_MINUTES="0")
+        handler.ec2 = FakeEc2()
+        handler.ec2.state = "running"
+
+        class Unreachable(Exception):
+            response = {"Error": {"Code": "InvalidInstanceId"}}
+
+        class FailingSsm:
+            def send_command(self, **kwargs):
+                raise Unreachable()
+
+        handler.ssm = FailingSsm()
+        content = _content(
+            handler.lambda_handler(_event({"type": 2, "data": {"name": "stop"}}), None)
+        )
+        self.assertIn("booting", content)
+        self.assertNotIn("shut down on its own", content)
+
 if __name__ == "__main__":
     unittest.main()
 
