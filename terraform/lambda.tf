@@ -43,6 +43,12 @@ resource "aws_lambda_function" "discord" {
       SERVER_PORT        = tostring(var.server_port)
       STOP_SCRIPT        = "/opt/minecraft/bin/request-stop.sh"
       ALLOWED_ROLE_IDS   = join(",", var.discord_allowed_role_ids)
+
+      # /stop controls. The Lambda refuses the command on these alone; the IAM
+      # policy separately withholds ssm:SendCommand when stop is disabled.
+      ALLOW_STOP_COMMAND   = tostring(var.allow_stop_command)
+      STOP_ROLE_IDS        = join(",", var.discord_stop_role_ids)
+      IDLE_TIMEOUT_MINUTES = tostring(var.idle_timeout_minutes)
     }
   }
 

@@ -143,6 +143,75 @@ connect_address_with_port() {
 }
 
 # --------------------------------------------------------------------------
+# Fabric server jar
+#
+# Shared by bootstrap.sh, which installs the jar on the first boot, and
+# update-server-jar.sh, which replaces it when minecraft_version changes.
+# --------------------------------------------------------------------------
+
+# Newest stable entry from one of Fabric's meta lists: game, loader or
+# installer.
+fabric_latest() {
+  curl -fsS -m 30 "https://meta.fabricmc.net/v2/versions/$1" \
+    | jq -r '[.[] | select(.stable == true)][0].version'
+}
+
+# Resolve MINECRAFT_VERSION to a concrete game version. "latest" -- or unset --
+# means whatever Fabric currently calls stable.
+resolve_game_version() {
+  local game="${MINECRAFT_VERSION:-latest}"
+  [ "$game" = "latest" ] && game=$(fabric_latest game)
+  [ -n "$game" ] || return 1
+  echo "$game"
+}
+
+# Download the Fabric launcher for one game version into $SERVER_DIR, and
+# record which version it is.
+#
+# The launcher fetches the vanilla server and libraries on its first run, so
+# this is the only download needed. It lands on a .tmp file and is renamed, so
+# an interrupted download cannot leave a truncated jar for the JVM to choke on.
+install_fabric_jar() {
+  local game="$1"
+  local jar="$SERVER_DIR/${SERVER_JAR:-server.jar}"
+  local loader="${FABRIC_LOADER_VERSION:-latest}" installer url
+
+  [ "$loader" = "latest" ] && loader=$(fabric_latest loader)
+  installer=$(fabric_latest installer)
+  if [ -z "$game" ] || [ -z "$loader" ] || [ -z "$installer" ]; then
+    log "ERROR: could not resolve Fabric versions from meta.fabricmc.net"
+    return 1
+  fi
+
+  log "installing Fabric: Minecraft $game, loader $loader, installer $installer"
+  url="https://meta.fabricmc.net/v2/versions/loader/$game/$loader/$installer/server/jar"
+
+  if ! curl -fsSL -m 300 --retry 3 -o "$jar.tmp" "$url"; then
+    log "ERROR: failed to download the server jar"
+    rm -f "$jar.tmp"
+    return 1
+  fi
+  if [ ! -s "$jar.tmp" ]; then
+    log "ERROR: downloaded server jar is empty"
+    rm -f "$jar.tmp"
+    return 1
+  fi
+
+  mv "$jar.tmp" "$jar"
+  # Written only after the jar is in place, so the two can never disagree.
+  echo "$game" > "$SERVER_DIR/.minecraft-version"
+}
+
+# The game version of the jar currently installed, or nothing if unknown.
+installed_game_version() {
+  local file="$SERVER_DIR/.minecraft-version"
+  [ -s "$file" ] || return 1
+  # Trimmed: a stray newline or carriage return here would make an identical
+  # version compare unequal and trigger a pointless reinstall on every boot.
+  tr -d '[:space:]' < "$file"
+}
+
+# --------------------------------------------------------------------------
 # Discord
 # --------------------------------------------------------------------------
 

@@ -1,6 +1,6 @@
 [Unit]
 Description=Minecraft on-demand server
-Documentation=https://github.com/your-org/AWS_Discord_MC_Server
+Documentation=https://github.com/jiru-shan/AWS_Discord_MC_Server
 After=network-online.target minecraft-refresh.service
 Wants=network-online.target
 # Pick up any configuration or script changes from the last `terraform apply`
@@ -18,12 +18,23 @@ EnvironmentFile=/etc/minecraft/config.env
 # sudoers rule. servermanager.js drops to MC_UID/MC_GID for the Java process
 # itself, which is the part exposed to the internet.
 ExecStartPre=/opt/minecraft/bin/announce-address.sh
+# Bring the jar in line with minecraft_version before the mods are resolved
+# against it. Non-fatal: a failed update leaves the working jar in place.
+ExecStartPre=-/opt/minecraft/bin/update-server-jar.sh
+# Reconcile the mods directory with server_mods before the JVM reads it. The
+# leading "-" makes a failure here non-fatal: mods are an optimisation, and no
+# optimisation is worth leaving people unable to play.
+ExecStartPre=-/usr/bin/node /opt/minecraft/bin/install-mods.js
 ExecStart=/usr/bin/node /opt/minecraft/bin/servermanager.js
 ExecStopPost=/opt/minecraft/bin/on-stop.sh
 
 # Never restart: an exit here means the session is over and the box is on its
 # way down. Restarting would fight the shutdown and keep the instance billing.
 Restart=no
+
+# Room for the mod sync above to fetch a few jars on a cold instance. The
+# default 90 seconds is enough until someone lists a large modpack.
+TimeoutStartSec=300
 
 # Generous stop timeout: saving a large world can take a while, and being
 # killed mid-save is how worlds get corrupted.

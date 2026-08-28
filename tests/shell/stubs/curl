@@ -1,19 +1,29 @@
 #!/usr/bin/env bash
-# Stub curl covering the two things the scripts use it for: IMDSv2 metadata and
-# posting to the Discord webhook.
+# Stub curl covering what the scripts use it for: IMDSv2 metadata, posting to
+# the Discord webhook, and Fabric's meta API plus the jar it hands out.
 set -uo pipefail
 printf '%s\n' "curl $*" >> "$STUB_LOG"
 
 url=""
 data=""
+output=""
 next_is_data=0
+next_is_output=0
 for arg in "$@"; do
   if [ "$next_is_data" = "1" ]; then data="$arg"; next_is_data=0; continue; fi
+  if [ "$next_is_output" = "1" ]; then output="$arg"; next_is_output=0; continue; fi
   case "$arg" in
     -d) next_is_data=1 ;;
+    -o) next_is_output=1 ;;
     http://*|https://*) url="$arg" ;;
   esac
 done
+
+# Write to -o when one was given, so the caller's "did the file appear and is
+# it non-empty" checks are exercised for real.
+emit() {
+  if [ -n "$output" ]; then printf '%s' "$1" > "$output"; else printf '%s\n' "$1"; fi
+}
 
 case "$url" in
   *169.254.169.254/latest/api/token)
@@ -32,6 +42,43 @@ case "$url" in
     [ "${STUB_WEBHOOK_FAIL:-0}" = "1" ] && exit 22
     printf '%s\n' "$data" >> "$STUB_DIR/webhook-posts"
     ;;
+
+  # ------------------------------------------------------------------
+  # Fabric
+  # ------------------------------------------------------------------
+
+  # The jar itself. Matched before the version lists below, which share a
+  # prefix with it.
+  */v2/versions/loader/*/server/jar)
+    [ "${STUB_JAR_FAIL:-0}" = "1" ] && exit 22
+    printf '%s\n' "$url" >> "$STUB_DIR/jar-downloads"
+    # An empty body is its own failure mode: the caller must reject it rather
+    # than install a zero-byte jar.
+    if [ "${STUB_JAR_EMPTY:-0}" = "1" ]; then emit ""; else emit "stub-fabric-jar-body"; fi
+    ;;
+
+  */v2/versions/game)
+    [ "${STUB_FABRIC_META_FAIL:-0}" = "1" ] && exit 22
+    # Newest first, with an unstable entry ahead of the stable one, so the
+    # caller's "stable only" filter has something to do.
+    emit '[{"version":"9.9-snapshot","stable":false},{"version":"'"${STUB_FABRIC_GAME:-1.21.4}"'","stable":true},{"version":"1.21.3","stable":true}]'
+    ;;
+  */v2/versions/loader)
+    [ "${STUB_FABRIC_META_FAIL:-0}" = "1" ] && exit 22
+    emit '[{"version":"0.16.9","stable":true}]'
+    ;;
+  */v2/versions/installer)
+    [ "${STUB_FABRIC_META_FAIL:-0}" = "1" ] && exit 22
+    emit '[{"version":"1.0.1","stable":true}]'
+    ;;
+
+  # A jar from server_jar_url, or any other direct download.
+  https://*.jar)
+    [ "${STUB_JAR_FAIL:-0}" = "1" ] && exit 22
+    printf '%s\n' "$url" >> "$STUB_DIR/jar-downloads"
+    emit "stub-jar-body"
+    ;;
+
   *)
     echo "stub curl: unhandled url '$url'" >&2
     exit 64

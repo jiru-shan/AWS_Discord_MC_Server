@@ -94,6 +94,10 @@ sudo journalctl -u minecraft.service | grep -i route53
 - `NoSuchHostedZone` — wrong `route53_zone_id`. It is the zone ID (`Z...`), not
   the domain name.
 
+[route53-setup.md](route53-setup.md#troubleshooting) covers the rest, including
+the case where the name does not resolve anywhere because the domain is still
+delegated to another registrar.
+
 ## The server shuts down while people are playing
 
 Player counting reads `joined the game` and `left the game` from the log. A mod
@@ -220,10 +224,15 @@ directly, or delete it and restart.
   baseline once credits run out — very noticeable during world generation.
   `"unlimited"` costs a few cents an hour more and removes the cliff.
 - Lower `server_view_distance` to 8 or 6. It is the cheapest win available.
-- Add Lithium (a server-side performance mod) — see
-  [operations.md](operations.md#mods).
-- Move up an instance size. `t4g.medium` is 4 GB; a modpack wants
-  `t4g.large`.
+- Check the optimisation mods are actually installed: `sudo mc mods` should
+  list Lithium, FerriteCore and Krypton. If they are missing,
+  `sudo journalctl -u minecraft | grep '\[mods\]'` says why — usually no build
+  yet for the Minecraft version you are on. See
+  [operations.md](operations.md#mods), which also lists what else is worth
+  adding.
+- Move up an instance size. The default `t4g.small` is 2 GB, which is a
+  couple of players on a vanilla world; `t4g.medium` is 4 GB and `t4g.large`
+  is 8 GB for a modpack. Both leave the free tier.
 
 ## Reading the logs
 

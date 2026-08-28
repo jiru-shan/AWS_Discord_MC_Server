@@ -9,6 +9,7 @@ help:
 	@echo "make test        run every test suite"
 	@echo "make test-lambda   Ed25519 + Discord handler (python)"
 	@echo "make test-session  idle-shutdown state machine (node)"
+	@echo "make test-mods     the mod installer (node)"
 	@echo "make test-shell    on-instance scripts (bash, stubbed AWS)"
 	@echo "make check       test + terraform validate + shell/node syntax"
 	@echo "make init        terraform init"
@@ -22,7 +23,7 @@ help:
 	@echo "make outputs     show the Terraform outputs"
 
 .PHONY: test
-test: test-lambda test-session test-shell
+test: test-lambda test-session test-mods test-shell
 
 .PHONY: test-lambda
 test-lambda:          ## Ed25519 verification and the Discord handler
@@ -31,6 +32,10 @@ test-lambda:          ## Ed25519 verification and the Discord handler
 .PHONY: test-session
 test-session:         ## the idle-shutdown state machine
 	node --test tests/test_session.js
+
+.PHONY: test-mods
+test-mods:            ## the Fabric mod installer
+	node --test tests/test_mods.js
 
 .PHONY: test-shell
 test-shell:           ## the on-instance scripts, against stubbed AWS and systemd
@@ -41,7 +46,7 @@ check: test
 	$(TF) fmt -recursive
 	$(TF) validate
 	@for f in server/bin/*.sh server/bin/mc; do bash -n "$$f" || exit 1; done
-	@node --check server/bin/servermanager.js
+	@for f in server/bin/*.js; do node --check "$$f" || exit 1; done
 	@python -m py_compile lambda/*.py scripts/*.py
 	@echo "all checks passed"
 

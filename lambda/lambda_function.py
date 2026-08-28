@@ -32,11 +32,22 @@ INSTANCE_ID = os.environ["INSTANCE_ID"]
 CONNECT_ADDRESS = os.environ.get("CONNECT_ADDRESS", "")
 SERVER_PORT = os.environ.get("SERVER_PORT", "25565")
 STOP_SCRIPT = os.environ.get("STOP_SCRIPT", "/opt/minecraft/bin/request-stop.sh")
-ALLOWED_ROLE_IDS = {
-    role.strip()
-    for role in os.environ.get("ALLOWED_ROLE_IDS", "").split(",")
-    if role.strip()
-}
+
+
+def _role_set(name):
+    return {role.strip() for role in os.environ.get(name, "").split(",") if role.strip()}
+
+
+ALLOWED_ROLE_IDS = _role_set("ALLOWED_ROLE_IDS")
+
+# /stop controls. Turning the command off protects a shared server from being
+# ended by anyone in it, deliberately or by mistake; the roles narrow it to the
+# people running the server instead. Terraform also withholds the Lambda's
+# ssm:SendCommand permission when the command is off, so this is a second lock
+# on the same door rather than the only one.
+ALLOW_STOP_COMMAND = os.environ.get("ALLOW_STOP_COMMAND", "true").lower() == "true"
+STOP_ROLE_IDS = _role_set("STOP_ROLE_IDS")
+IDLE_TIMEOUT_MINUTES = os.environ.get("IDLE_TIMEOUT_MINUTES", "15")
 
 # Discord interaction types.
 PING = 1
@@ -96,6 +107,36 @@ def _is_authorised(body):
         return True
     member = body.get("member") or {}
     return bool(ALLOWED_ROLE_IDS.intersection(member.get("roles") or []))
+
+
+def _stop_refusal(body):
+    """Why this member may not stop the server, or None if they may.
+
+    Separate from _is_authorised because the answers differ: one is "you may
+    not use this bot", the other is "this server is not stopped by hand", and
+    telling someone the wrong one sends them to argue with the wrong person.
+    """
+    if not ALLOW_STOP_COMMAND:
+        if IDLE_TIMEOUT_MINUTES in ("0", ""):
+            return "Stopping the server from Discord is disabled here."
+        return (
+            "Stopping the server from Discord is disabled here. It shuts down "
+            "on its own once nobody has been online for {} minutes.".format(
+                IDLE_TIMEOUT_MINUTES
+            )
+        )
+
+    if STOP_ROLE_IDS:
+        member = body.get("member") or {}
+        if not STOP_ROLE_IDS.intersection(member.get("roles") or []):
+            return (
+                "Only server admins can stop the server. It shuts down on its "
+                "own once nobody has been online for {} minutes.".format(
+                    IDLE_TIMEOUT_MINUTES
+                )
+            )
+
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -250,6 +291,13 @@ def handle_command(body):
         return _reply("Unknown command `/{}`.".format(name), ephemeral=True)
     if not _is_authorised(body):
         return _reply("You do not have permission to use this command.", ephemeral=True)
+
+    if name == "stop":
+        refusal = _stop_refusal(body)
+        if refusal is not None:
+            # Ephemeral: only the person who asked sees it, so a refusal does
+            # not read as an announcement to the channel.
+            return _reply(refusal, ephemeral=True)
 
     try:
         return handler()

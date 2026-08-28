@@ -318,6 +318,117 @@ class TestRoleGate(unittest.TestCase):
         self.assertIn("do not have permission", _content(response))
 
 
+
+class TestStopCommandControls(unittest.TestCase):
+    """Who may end a session everyone else is in.
+
+    The point of turning /stop off is that one person cannot end an evening for
+    the rest of the server, so the tests care as much about the instance being
+    left alone as about the wording of the refusal.
+    """
+
+    def _handler(self, **env):
+        handler = _load_handler(**env)
+        handler.ec2 = FakeEc2()
+        handler.ssm = FakeSsm()
+        handler.ec2.state = "running"
+        return handler
+
+    def _stop(self, handler, roles=None):
+        payload = {"type": 2, "data": {"name": "stop"}}
+        if roles is not None:
+            payload["member"] = {"roles": roles}
+        return handler.lambda_handler(_event(payload), None)
+
+    # -- disabled outright ---------------------------------------------------
+
+    def test_stop_is_refused_when_disabled(self):
+        handler = self._handler(ALLOW_STOP_COMMAND="false", IDLE_TIMEOUT_MINUTES="15")
+        response = self._stop(handler)
+
+        self.assertIn("disabled", _content(response))
+        self.assertEqual(handler.ssm.commands, [], "no stop may reach the instance")
+
+    def test_a_refusal_says_when_the_server_will_stop_by_itself(self):
+        handler = self._handler(ALLOW_STOP_COMMAND="false", IDLE_TIMEOUT_MINUTES="20")
+        self.assertIn("20 minutes", _content(self._stop(handler)))
+
+    def test_a_refusal_omits_the_idle_promise_when_idling_is_off(self):
+        # idle_timeout_minutes = 0 means it never stops on its own; promising
+        # that it will would be a lie.
+        handler = self._handler(ALLOW_STOP_COMMAND="false", IDLE_TIMEOUT_MINUTES="0")
+        content = _content(self._stop(handler))
+        self.assertIn("disabled", content)
+        self.assertNotIn("on its own", content)
+
+    def test_a_refusal_is_ephemeral(self):
+        handler = self._handler(ALLOW_STOP_COMMAND="false")
+        data = json.loads(self._stop(handler)["body"])["data"]
+        self.assertEqual(data.get("flags"), 64, "only the asker should see it")
+
+    def test_the_other_commands_still_work_with_stop_disabled(self):
+        handler = self._handler(ALLOW_STOP_COMMAND="false")
+        response = handler.lambda_handler(
+            _event({"type": 2, "data": {"name": "start"}}), None
+        )
+        self.assertIn("already running", _content(response).lower())
+
+    # -- restricted to roles -------------------------------------------------
+
+    def test_stop_roles_admit_the_holder(self):
+        handler = self._handler(STOP_ROLE_IDS="900,901")
+        self._stop(handler, roles=["901"])
+        self.assertEqual(len(handler.ssm.commands), 1)
+
+    def test_stop_roles_refuse_everyone_else(self):
+        handler = self._handler(STOP_ROLE_IDS="900,901")
+        response = self._stop(handler, roles=["777"])
+
+        self.assertIn("admins", _content(response))
+        self.assertEqual(handler.ssm.commands, [])
+
+    def test_stop_roles_refuse_a_member_with_no_roles_at_all(self):
+        handler = self._handler(STOP_ROLE_IDS="900")
+        self._stop(handler, roles=[])
+        self.assertEqual(handler.ssm.commands, [])
+
+    def test_stop_roles_refuse_an_interaction_carrying_no_member(self):
+        # A DM has no member object. Failing open here would hand /stop to
+        # anyone who could invoke the bot outside the server.
+        handler = self._handler(STOP_ROLE_IDS="900")
+        self._stop(handler)
+        self.assertEqual(handler.ssm.commands, [])
+
+    # -- defaults and interactions ------------------------------------------
+
+    def test_stop_is_allowed_by_default(self):
+        handler = self._handler()
+        self._stop(handler)
+        self.assertEqual(len(handler.ssm.commands), 1)
+
+    def test_an_unset_flag_defaults_to_allowed(self):
+        handler = self._handler(ALLOW_STOP_COMMAND=None)
+        self._stop(handler)
+        self.assertEqual(len(handler.ssm.commands), 1)
+
+    def test_the_flag_is_read_case_insensitively(self):
+        handler = self._handler(ALLOW_STOP_COMMAND="False")
+        self.assertEqual(handler.ssm.commands, [])
+
+    def test_disabled_beats_a_stop_role(self):
+        # Belt and braces set together must not cancel out.
+        handler = self._handler(ALLOW_STOP_COMMAND="false", STOP_ROLE_IDS="900")
+        self._stop(handler, roles=["900"])
+        self.assertEqual(handler.ssm.commands, [])
+
+    def test_the_general_role_gate_still_applies_to_stop(self):
+        handler = self._handler(ALLOWED_ROLE_IDS="111", STOP_ROLE_IDS="900")
+        response = self._stop(handler, roles=["900"])
+
+        self.assertIn("do not have permission", _content(response))
+        self.assertEqual(handler.ssm.commands, [])
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -117,8 +117,12 @@ ENVEOF
   mkdir -p "$SYSTEMD_DIR" "$(dirname "$MC_BIN_LINK")"
   export PATH="$STUBS:$PATH"
 
+  # bash leaves a `VAR=1 func` prefix set after the call returns, so every stub
+  # switch has to be cleared here or it bleeds into the following tests.
   unset STUB_SERVICE_ACTIVE STUB_IMDS_FAIL STUB_NO_PUBLIC_IP STUB_ROUTE53_FAIL \
-        STUB_S3_FAIL STUB_SSM_FAIL STUB_WEBHOOK_FAIL SERVICE_RESULT
+        STUB_S3_FAIL STUB_SSM_FAIL STUB_WEBHOOK_FAIL SERVICE_RESULT \
+        STUB_JAR_FAIL STUB_JAR_EMPTY STUB_FABRIC_META_FAIL STUB_FABRIC_GAME \
+        STUB_PUBLIC_IP
 }
 
 teardown() { [ -n "${ROOT:-}" ] && rm -rf "$ROOT"; }
@@ -704,6 +708,201 @@ out=$(cd "$ROOT" && bash -c "
   ls '$SERVER_DIR'
 " 2>&1)
 assert_not_contains "$out" "ops.json" "no file should be created"
+teardown
+
+setup "mc version shows both the installed and the configured version" \
+  'MINECRAFT_VERSION="1.21.4"'
+printf '1.21.3\n' > "$SERVER_DIR/.minecraft-version"
+run_script mc version
+assert_contains "$OUT" "installed:  1.21.3" "installed version"
+assert_contains "$OUT" "configured: 1.21.4" "configured version"
+teardown
+
+setup "mc version says so when the installed version was never recorded"
+run_script mc version
+assert_contains "$OUT" "unrecorded" "it must not invent a version"
+teardown
+
+setup "mc upgrade refuses without --yes" 'MINECRAFT_VERSION="1.21.4"'
+# The upgrade is irreversible, so it asks once rather than acting on a typo.
+printf 'old-jar-body' > "$SERVER_DIR/server.jar"
+printf '1.21.3\n' > "$SERVER_DIR/.minecraft-version"
+run_script mc upgrade
+check "exits non-zero without confirmation" "$([ "$RC" != "0" ] && echo 0 || echo 1)"
+assert_contains "$OUT" "do not downgrade" "it should say why it is asking"
+assert_eq "old-jar-body" "$(cat "$SERVER_DIR/server.jar")" "nothing may change"
+teardown
+
+setup "mc upgrade refuses while the server is running" 'MINECRAFT_VERSION="1.21.4"'
+printf 'old-jar-body' > "$SERVER_DIR/server.jar"
+printf '1.21.3\n' > "$SERVER_DIR/.minecraft-version"
+STUB_SERVICE_ACTIVE=1 run_script mc upgrade --yes
+check "exits non-zero while active" "$([ "$RC" != "0" ] && echo 0 || echo 1)"
+assert_contains "$OUT" "maintenance-stop" "it should name the way to proceed"
+assert_eq "old-jar-body" "$(cat "$SERVER_DIR/server.jar")" "nothing may change"
+teardown
+
+setup "mc upgrade --yes moves a server pinned to latest" 'MINECRAFT_VERSION="latest"'
+# The boot-time check deliberately declines this case; the explicit command is
+# how you move a "latest" server when you actually mean to.
+printf 'old-jar-body' > "$SERVER_DIR/server.jar"
+printf '1.21.3\n' > "$SERVER_DIR/.minecraft-version"
+run_script mc upgrade --yes
+assert_eq "stub-fabric-jar-body" "$(cat "$SERVER_DIR/server.jar")" "the jar should be replaced"
+assert_eq "1.21.4" "$(cat "$SERVER_DIR/.minecraft-version")" "and the newest stable recorded"
+teardown
+
+# ==========================================================================
+# update-server-jar.sh: reconciling the jar with minecraft_version
+#
+# The upgrade is irreversible -- worlds do not downgrade -- so most of what
+# follows is about the cases where it must decline to act.
+# ==========================================================================
+
+# Put a jar and a recorded version in place, as a booted server would have.
+seed_jar() { # seed_jar [recorded version]
+  printf 'old-jar-body' > "$SERVER_DIR/server.jar"
+  [ $# -gt 0 ] && printf '%s\n' "$1" > "$SERVER_DIR/.minecraft-version"
+  return 0
+}
+
+setup "a pinned version change replaces the jar and records the new version" \
+  'MINECRAFT_VERSION="1.21.4"' 'BACKUP_BUCKET=""'
+seed_jar "1.21.3"
+mkdir -p "$SERVER_DIR/world"
+run_script update-server-jar.sh
+assert_eq "0" "$RC" "the boot must never be failed by this script"
+assert_contains "$OUT" "1.21.3 -> 1.21.4" "the reason should name both versions"
+assert_eq "1.21.4" "$(cat "$SERVER_DIR/.minecraft-version")" "recorded version"
+assert_eq "stub-fabric-jar-body" "$(cat "$SERVER_DIR/server.jar")" "jar replaced"
+backups=$(ls "$DATA_MOUNT/backups" 2>/dev/null)
+assert_contains "$backups" "minecraft-" "a backup must be taken before an irreversible upgrade"
+teardown
+
+setup "an unchanged pinned version does nothing at all" 'MINECRAFT_VERSION="1.21.4"'
+seed_jar "1.21.4"
+run_script update-server-jar.sh
+assert_eq "0" "$RC" "exit code"
+assert_no_file "$STUB_DIR/jar-downloads" "nothing should have been downloaded"
+assert_eq "old-jar-body" "$(cat "$SERVER_DIR/server.jar")" "the jar must be untouched"
+teardown
+
+setup 'minecraft_version = "latest" never upgrades on its own' 'MINECRAFT_VERSION="latest"'
+# Following "latest" automatically would upgrade a world the first time Mojang
+# shipped a release, with no backup anyone intended and no way back.
+seed_jar "1.21.3"
+run_script update-server-jar.sh
+assert_contains "$OUT" "staying on 1.21.3" "it should say it is holding position"
+assert_no_file "$STUB_DIR/jar-downloads" "no download"
+assert_eq "1.21.3" "$(cat "$SERVER_DIR/.minecraft-version")" "recorded version unchanged"
+teardown
+
+setup "a jar with no recorded version is left alone" 'MINECRAFT_VERSION="1.21.4"'
+# Its real version is unknown, so reinstalling would be a guess that could
+# silently upgrade a world.
+seed_jar
+run_script update-server-jar.sh
+assert_contains "$OUT" "unrecorded" "it should say why it declined"
+assert_contains "$OUT" "mc upgrade" "and name the deliberate way to proceed"
+assert_no_file "$STUB_DIR/jar-downloads" "no download"
+assert_eq "old-jar-body" "$(cat "$SERVER_DIR/server.jar")" "the jar must be untouched"
+teardown
+
+setup "a missing jar is reinstalled rather than left missing" 'MINECRAFT_VERSION="1.21.4"'
+run_script update-server-jar.sh
+assert_contains "$OUT" "no server jar present" "the reason"
+assert_eq "stub-fabric-jar-body" "$(cat "$SERVER_DIR/server.jar")" "jar installed"
+assert_eq "1.21.4" "$(cat "$SERVER_DIR/.minecraft-version")" "version recorded"
+teardown
+
+setup "a missing jar with latest resolves the version from Fabric" 'MINECRAFT_VERSION="latest"'
+run_script update-server-jar.sh
+assert_eq "1.21.4" "$(cat "$SERVER_DIR/.minecraft-version")" "the newest stable from the meta stub"
+teardown
+
+setup "a failed download keeps the jar already installed" 'MINECRAFT_VERSION="1.21.4"'
+seed_jar "1.21.3"
+STUB_JAR_FAIL=1 run_script update-server-jar.sh
+assert_eq "0" "$RC" "a failed upgrade must not fail the boot"
+assert_eq "old-jar-body" "$(cat "$SERVER_DIR/server.jar")" "the old jar survives"
+assert_eq "1.21.3" "$(cat "$SERVER_DIR/.minecraft-version")" "and so does its recorded version"
+assert_contains "$OUT" "keeping the jar already installed" "it should say what it fell back to"
+teardown
+
+setup "an empty download is rejected rather than installed" 'MINECRAFT_VERSION="1.21.4"'
+seed_jar "1.21.3"
+STUB_JAR_EMPTY=1 run_script update-server-jar.sh
+assert_eq "old-jar-body" "$(cat "$SERVER_DIR/server.jar")" "a zero-byte jar must not replace a working one"
+assert_eq "1.21.3" "$(cat "$SERVER_DIR/.minecraft-version")" "recorded version unchanged"
+teardown
+
+setup "an unreachable Fabric meta leaves everything alone" 'MINECRAFT_VERSION="1.21.4"'
+seed_jar "1.21.3"
+STUB_FABRIC_META_FAIL=1 run_script update-server-jar.sh
+assert_eq "0" "$RC" "exit code"
+assert_eq "old-jar-body" "$(cat "$SERVER_DIR/server.jar")" "the jar survives"
+teardown
+
+setup "a failed pre-upgrade backup cancels the upgrade" \
+  'MINECRAFT_VERSION="1.21.4"' 'BACKUP_BUCKET=""'
+# An upgrade with no way back is worse than staying a version behind.
+seed_jar "1.21.3"
+mkdir -p "$SERVER_DIR/world"
+# A plain file where the backup directory belongs: mkdir -p fails, so
+# backup.sh exits non-zero exactly as it would on a full or read-only volume.
+rm -rf "$DATA_MOUNT/backups"
+printf 'not a directory' > "$DATA_MOUNT/backups"
+run_script update-server-jar.sh
+assert_eq "0" "$RC" "exit code"
+assert_contains "$OUT" "refusing to upgrade" "it should refuse explicitly"
+assert_eq "old-jar-body" "$(cat "$SERVER_DIR/server.jar")" "the jar must be untouched"
+assert_eq "1.21.3" "$(cat "$SERVER_DIR/.minecraft-version")" "recorded version unchanged"
+teardown
+
+setup "a fresh world is upgraded without demanding a backup" 'MINECRAFT_VERSION="1.21.4"'
+# No world directory yet means nothing to lose, so a missing backup path is
+# not a reason to block the upgrade.
+seed_jar "1.21.3"
+run_script update-server-jar.sh
+assert_eq "stub-fabric-jar-body" "$(cat "$SERVER_DIR/server.jar")" "jar replaced"
+teardown
+
+setup "server_jar_url takes the jar out of this script's hands" \
+  'MINECRAFT_VERSION="1.21.4"' 'SERVER_JAR_URL="https://example.com/custom.jar"'
+seed_jar "1.21.3"
+run_script update-server-jar.sh
+assert_contains "$OUT" "leaving the jar alone" "it should decline"
+assert_no_file "$STUB_DIR/jar-downloads" "no download"
+teardown
+
+setup "a recorded version with trailing whitespace is not a version change" \
+  'MINECRAFT_VERSION="1.21.4"'
+# The file is written with a trailing newline; an unstripped compare would
+# reinstall the same jar on every single boot.
+printf 'old-jar-body' > "$SERVER_DIR/server.jar"
+printf '1.21.4  \r\n' > "$SERVER_DIR/.minecraft-version"
+run_script update-server-jar.sh
+assert_no_file "$STUB_DIR/jar-downloads" "no download"
+assert_eq "old-jar-body" "$(cat "$SERVER_DIR/server.jar")" "the jar must be untouched"
+teardown
+
+setup "an upgrade announces itself in Discord" \
+  'MINECRAFT_VERSION="1.21.4"' 'DISCORD_WEBHOOK_SSM_PARAM="/minecraft/discord-webhook-url"'
+printf 'https://discord.com/api/webhooks/1/abc' > "$STUB_SSM_DIR/_minecraft_discord-webhook-url"
+seed_jar "1.21.3"
+run_script update-server-jar.sh
+posts=$(cat "$STUB_DIR/webhook-posts" 2>/dev/null || echo "")
+assert_contains "$posts" "1.21.3 to 1.21.4" "players should be told the version moved"
+teardown
+
+setup "a failed upgrade also says so in Discord" \
+  'MINECRAFT_VERSION="1.21.4"' 'DISCORD_WEBHOOK_SSM_PARAM="/minecraft/discord-webhook-url"'
+printf 'https://discord.com/api/webhooks/1/abc' > "$STUB_SSM_DIR/_minecraft_discord-webhook-url"
+seed_jar "1.21.3"
+STUB_JAR_FAIL=1 run_script update-server-jar.sh
+posts=$(cat "$STUB_DIR/webhook-posts" 2>/dev/null || echo "")
+assert_contains "$posts" "failed" "a silent failure would look like a successful upgrade"
+assert_contains "$posts" "1.21.3" "and it should name what is actually running"
 teardown
 
 # ==========================================================================

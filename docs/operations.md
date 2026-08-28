@@ -143,42 +143,90 @@ values.
 
 ## Mods
 
-Fabric mods are jars in `/srv/minecraft/server/mods`:
+Mods are managed from Terraform. `server_mods` is a list, and the instance
+reconciles `/srv/minecraft/server/mods` against it on every boot: entries you
+add are downloaded, entries you remove are deleted, and a Minecraft version
+change re-resolves all of them.
 
-```bash
-sudo mc maintenance-stop
-sudo mkdir -p /srv/minecraft/server/mods
-sudo curl -L -o /srv/minecraft/server/mods/lithium.jar '<url>'
-sudo chown -R minecraft:minecraft /srv/minecraft/server/mods
-sudo mc start
-sudo mc logs -f
+```hcl
+server_mods = ["lithium", "ferrite-core", "krypton", "spark"]
 ```
 
-Server-side performance mods (Lithium, FerriumMC) are usually worth it on a
-small instance. Mods requiring a matching client install must be distributed to
-players separately.
+```bash
+terraform apply                 # publishes the list
+```
 
-Give the instance more memory if you add a large modpack: raise `instance_type`
-to `t4g.large` and apply. The heap is sized from instance memory automatically
-unless you set `java_heap_mb`.
+then `/stop` and `/start` in Discord. To apply it without waiting for a boot:
+
+```bash
+sudo mc mods sync               # download and prune now
+sudo systemctl restart minecraft
+sudo mc mods                    # what is installed, and which entries are managed
+```
+
+Fabric reads the mods directory once, at launch, so a sync always needs a
+restart to take effect. Failures never block the server from starting; they are
+logged under `[mods]`:
+
+```bash
+sudo journalctl -u minecraft | grep '\[mods\]'
+```
+
+Entries are Modrinth project slugs, a slug pinned to one build
+(`lithium@0.15.0`), or an `https://` URL ending in `.jar`. Jars you copy in by
+hand are never touched.
+
+**[docs/mods.md](mods.md) is the full guide** — which mods are worth adding,
+what players need installed, editing mod and server configuration, tuning for
+more players, and upgrading Minecraft without breaking your mods.
 
 ## Upgrading Minecraft
 
+Set the version and apply:
+
 ```hcl
-minecraft_version = "1.21.4"
+minecraft_version = "1.21.4"      # from "latest", or from an older pin
 ```
 
-`terraform apply` publishes the new value, but the jar is only downloaded when
-one is not already present. To force it:
+```bash
+terraform apply
+```
+
+Then `/stop` and `/start`. On the next boot `update-server-jar.sh` sees that
+the installed version no longer matches the configured one, **backs the world
+up**, downloads the new Fabric launcher and re-resolves every mod against the
+new version.
+
+`sudo mc version` shows both numbers, so you can check which one you are on:
+
+```
+installed:  1.21.3
+configured: 1.21.4
+```
+
+**`latest` never upgrades on its own.** It is resolved once, when the jar is
+first installed, and then stays put. Following it automatically would upgrade
+your world the first time Mojang shipped a release — with no backup anyone
+intended, no check that your mods have builds for it, and no way back. Pin a
+version to move.
+
+**Worlds do not downgrade.** A world opened by a newer Minecraft cannot be
+opened by the older one again; the pre-upgrade backup is the only way back. See
+[Restoring](#restoring).
+
+If the upgrade cannot be completed — the backup fails, the download fails,
+Fabric has no build for that version — the old jar stays in place and the
+server starts on the version it was already running, saying so in the journal
+and in Discord. A failed upgrade costs you a version, not an evening.
+
+To upgrade on the spot rather than at the next boot, or to move a server whose
+`minecraft_version` is `latest`:
 
 ```bash
 sudo mc maintenance-stop
-sudo rm /srv/minecraft/server/server.jar
-sudo /opt/minecraft/bin/bootstrap.sh
+sudo mc upgrade --yes
+sudo mc start && sudo mc logs -f
 ```
-
-**Back up first.** A world opened by a newer version cannot be opened by the old
-one again.
 
 ## Watching costs
 

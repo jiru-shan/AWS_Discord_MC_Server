@@ -47,23 +47,84 @@ variable "instance_type" {
     equivalent and runs Fabric fine; the architecture and AMI are selected
     automatically from whatever you put here.
 
+    The default is free-tier eligible: t4g.small is covered by the T4g free
+    trial (750 hours a month, every account, through 31 December 2026) and is
+    also on the free-tier list for accounts opened on or after 15 July 2025.
+    It is the smallest type that runs a Minecraft server at all -- the micro
+    types in the free tier have 1 GB of memory, which the JVM cannot work in.
+
     Rough guide: t4g.small (2 GB) for 2-3 players on a light world,
     t4g.medium (4 GB) for up to about 8, t4g.large (8 GB) for a modpack.
+    Anything above t4g.small is billed at the normal on-demand rate.
+
+    Changing size within a family is applied in place. Changing architecture
+    (t4g -> t3) on a deployment that already exists needs
+    `terraform apply -replace=aws_instance.server`, because the AMI is pinned
+    after the first boot and the old one would not boot on the new CPU. The
+    world is on its own volume either way.
   EOT
   type        = string
-  default     = "t4g.medium"
+  default     = "t4g.small"
 }
 
 variable "root_volume_gb" {
-  description = "Root volume size. Holds the OS and the scripts only; the world lives on the data volume."
+  description = <<-EOT
+    Root volume size. Holds the OS and the scripts only; the world lives on the
+    data volume. Amazon Linux, Java and Node come to about 4 GB.
+
+    The default plus data_volume_gb is 28 GB, which fits the 30 GB of EBS the
+    free tier covers. Raising either past that budget starts a monthly charge.
+  EOT
   type        = number
-  default     = 12
+  default     = 8
 }
 
 variable "data_volume_gb" {
-  description = "Persistent volume for the world, backups and mods. Survives instance replacement."
+  description = <<-EOT
+    Persistent volume for the world, backups and mods. Survives instance
+    replacement. Counts against the same 30 GB free-tier EBS budget as
+    root_volume_gb.
+  EOT
   type        = number
   default     = 20
+}
+
+variable "server_mods" {
+  description = <<-EOT
+    Fabric mods to install, reconciled against the mods directory on every
+    boot: entries added here are downloaded, entries removed are deleted, and a
+    Minecraft version change re-resolves all of them.
+
+    Each entry is a Modrinth project slug, a slug pinned to one build
+    (`lithium@0.15.0`), or an https URL ending in .jar for anything not on
+    Modrinth. Jars copied into the directory by hand are never touched.
+
+    The default three are server-side only, need no Fabric API and require
+    nothing of players' clients. They are what makes the free-tier t4g.small
+    hold more than a couple of people:
+
+      lithium      rewrites the hot paths of the game tick. The single
+                   biggest win, and behaviour-preserving.
+      ferrite-core cuts heap use substantially, which on a 2 GB instance is
+                   the difference between headroom and garbage-collection
+                   pauses.
+      krypton      lighter networking, mostly felt with several players
+                   loading chunks at once.
+
+    A mod with no build for the running Minecraft version is skipped, and its
+    jar removed if one was installed for an older version -- Fabric refuses to
+    start rather than run a mismatched mod. Set this to [] to run vanilla.
+  EOT
+  type        = list(string)
+  default     = ["lithium", "ferrite-core", "krypton"]
+
+  validation {
+    condition = alltrue([
+      for mod in var.server_mods :
+      can(regex("^https://[^ ]+[.]jar$", mod)) || can(regex("^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}(@[^@ ]+)?$", mod))
+    ])
+    error_message = "Each server_mods entry must be a Modrinth slug, slug@version, or an https:// URL ending in .jar."
+  }
 }
 
 variable "java_heap_mb" {
@@ -175,6 +236,42 @@ variable "discord_bot_username" {
   description = "Display name on webhook messages."
   type        = string
   default     = "Minecraft Server"
+}
+
+variable "allow_stop_command" {
+  description = <<-EOT
+    Whether /stop is available at all.
+
+    Set this to false on a shared server and the only way it powers off is by
+    going idle: nobody can end a session other people are still in, whether by
+    accident or to be a nuisance. The command stays registered in Discord and
+    replies explaining how long the server waits when empty, rather than
+    failing silently.
+
+    This is enforced in two places. The Lambda refuses the command, and with
+    stop disabled Terraform also declines to grant the Lambda the
+    ssm:SendCommand permission that carries it out, so the capability is not
+    merely hidden.
+
+    An operator can still stop the server from a shell on the instance
+    (`sudo mc stop`), which is the intended escape hatch.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "discord_stop_role_ids" {
+  description = <<-EOT
+    Discord role IDs allowed to run /stop, when it is enabled. Empty means
+    anyone who may use the other commands may also stop the server.
+
+    Use this instead of allow_stop_command = false when you want the people
+    running the server to keep the button and everybody else not to have it.
+    Roles listed here still have to pass discord_allowed_role_ids, if that is
+    set.
+  EOT
+  type        = list(string)
+  default     = []
 }
 
 variable "discord_allowed_role_ids" {

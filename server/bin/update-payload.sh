@@ -33,7 +33,7 @@ replace() {
   mv -f "$dest.new" "$dest"
 }
 
-for script in "$INSTALL_DIR/payload/bin/"*.sh "$INSTALL_DIR/payload/bin/servermanager.js"; do
+for script in "$INSTALL_DIR/payload/bin/"*.sh "$INSTALL_DIR/payload/bin/"*.js; do
   replace "$script" "$INSTALL_DIR/bin/$(basename "$script")" 0755
 done
 replace "$INSTALL_DIR/payload/bin/mc" "$MC_BIN_LINK" 0755

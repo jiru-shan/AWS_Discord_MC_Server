@@ -160,7 +160,7 @@ if [ "$PAYLOAD_DIR" != "$INSTALL_DIR/payload" ]; then
   cp -a "$PAYLOAD_DIR/." "$INSTALL_DIR/payload/"
 fi
 install -m 0755 "$INSTALL_DIR/payload/bin/"*.sh "$INSTALL_DIR/bin/"
-install -m 0755 "$INSTALL_DIR/payload/bin/servermanager.js" "$INSTALL_DIR/bin/"
+install -m 0755 "$INSTALL_DIR/payload/bin/"*.js "$INSTALL_DIR/bin/"
 install -m 0755 "$INSTALL_DIR/payload/bin/mc" "$MC_BIN_LINK"
 
 # --------------------------------------------------------------------------
@@ -187,39 +187,28 @@ fi
 # run, so nothing else needs fetching here.
 # --------------------------------------------------------------------------
 
-fabric_latest() {
-  curl -fsS "https://meta.fabricmc.net/v2/versions/$1" \
-    | jq -r '[.[] | select(.stable == true)][0].version'
-}
-
 install_server_jar() {
   local jar="$SERVER_DIR/${SERVER_JAR:-server.jar}"
 
+  # First boot only. On every later boot update-server-jar.sh decides whether
+  # the jar should be replaced, by comparing it against minecraft_version.
   if [ -s "$jar" ] && [ "${FORCE_JAR_REINSTALL:-false}" != "true" ]; then
     log "server jar already present; leaving it alone"
     return 0
   fi
 
   local url="${SERVER_JAR_URL:-}"
-  if [ -z "$url" ]; then
-    local game="${MINECRAFT_VERSION:-latest}"
-    local loader="${FABRIC_LOADER_VERSION:-latest}"
-    [ "$game" = "latest" ] && game=$(fabric_latest game)
-    [ "$loader" = "latest" ] && loader=$(fabric_latest loader)
-    local installer
-    installer=$(fabric_latest installer)
-    [ -n "$game" ] && [ -n "$loader" ] && [ -n "$installer" ] \
-      || die "could not resolve Fabric versions from meta.fabricmc.net"
-    log "installing Fabric: Minecraft $game, loader $loader, installer $installer"
-    url="https://meta.fabricmc.net/v2/versions/loader/$game/$loader/$installer/server/jar"
-    echo "$game" > "$SERVER_DIR/.minecraft-version"
-  else
+  if [ -n "$url" ]; then
     log "installing server jar from $url"
+    curl -fsSL --retry 3 -o "$jar.tmp" "$url" || die "failed to download the server jar"
+    [ -s "$jar.tmp" ] || die "downloaded server jar is empty"
+    mv "$jar.tmp" "$jar"
+    return 0
   fi
 
-  curl -fsSL --retry 3 -o "$jar.tmp" "$url" || die "failed to download the server jar"
-  [ -s "$jar.tmp" ] || die "downloaded server jar is empty"
-  mv "$jar.tmp" "$jar"
+  local game
+  game=$(resolve_game_version) || die "could not resolve a Minecraft version from meta.fabricmc.net"
+  install_fabric_jar "$game" || die "could not install the Fabric server jar"
 }
 
 install_server_jar

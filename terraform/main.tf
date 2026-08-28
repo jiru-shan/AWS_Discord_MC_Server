@@ -53,9 +53,14 @@ locals {
     "no-public-subnet-found--set-subnet_id-explicitly"
   )
 
-  # Leave 1 GB for the OS, the JVM outside the heap and the page cache.
-  auto_heap_mb = max(1024, data.aws_ec2_instance_type.server.memory_size - 1024)
-  heap_mb      = var.java_heap_mb > 0 ? var.java_heap_mb : local.auto_heap_mb
+  # Leave room for the OS, the JVM's own off-heap memory and the page cache:
+  # a full gigabyte where there is memory to spare, and 40% of it below that.
+  # The old "always reserve 1 GB" rule handed a 1 GB instance a 1 GB heap,
+  # which is every byte the machine has.
+  instance_memory_mb = data.aws_ec2_instance_type.server.memory_size
+  os_reserve_mb      = local.instance_memory_mb >= 2048 ? 1024 : floor(local.instance_memory_mb * 0.4)
+  auto_heap_mb       = max(512, local.instance_memory_mb - local.os_reserve_mb)
+  heap_mb            = var.java_heap_mb > 0 ? var.java_heap_mb : local.auto_heap_mb
 
   use_route53    = var.addressing_mode == "route53"
   use_elastic_ip = var.addressing_mode == "elastic_ip"
@@ -107,16 +112,16 @@ locals {
     DISCORD_WEBHOOK_SSM_PARAM = var.discord_webhook_url != "" ? local.webhook_param_name : ""
     DISCORD_USERNAME          = var.discord_bot_username
 
-    DATA_MOUNT      = local.data_mount
-    DATA_DEVICE     = local.data_device
-    DATA_VOLUME_ID  = aws_ebs_volume.data.id
-    SERVER_DIR      = local.server_dir
-    SERVER_JAR      = "server.jar"
-    MC_USER         = "minecraft"
-    INSTALL_DIR     = local.install_dir
-    JAVA_PACKAGE    = var.java_package
-    JAVA_HEAP_MB    = tostring(local.heap_mb)
-    NOTIFY_SCRIPT   = "/opt/minecraft/bin/notify.sh"
+    DATA_MOUNT     = local.data_mount
+    DATA_DEVICE    = local.data_device
+    DATA_VOLUME_ID = aws_ebs_volume.data.id
+    SERVER_DIR     = local.server_dir
+    SERVER_JAR     = "server.jar"
+    MC_USER        = "minecraft"
+    INSTALL_DIR    = local.install_dir
+    JAVA_PACKAGE   = var.java_package
+    JAVA_HEAP_MB   = tostring(local.heap_mb)
+    NOTIFY_SCRIPT  = "/opt/minecraft/bin/notify.sh"
 
     ACCEPT_EULA           = tostring(var.accept_minecraft_eula)
     MINECRAFT_VERSION     = var.minecraft_version
@@ -139,6 +144,7 @@ locals {
     SERVER_WHITELIST           = tostring(var.server_whitelist)
     SERVER_OPS                 = join(",", var.server_ops)
     SERVER_WHITELIST_PLAYERS   = join(",", var.server_whitelist_players)
+    SERVER_MODS                = join(",", var.server_mods)
 
     BACKUP_BUCKET     = aws_s3_bucket.data.id
     BACKUP_PREFIX     = "backups"

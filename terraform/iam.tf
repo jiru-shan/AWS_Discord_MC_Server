@@ -184,14 +184,23 @@ data "aws_iam_policy_document" "lambda" {
   # /stop runs the on-instance script rather than calling ec2:StopInstances, so
   # the world is saved and backed up first. Deliberately no ec2:StopInstances
   # here: there is no safe path that skips the save.
-  statement {
-    sid       = "RequestGracefulStop"
-    effect    = "Allow"
-    actions   = ["ssm:SendCommand"]
-    resources = [
-      local.instance_arn,
-      "${local.arn_prefix}:ssm:${var.aws_region}::document/AWS-RunShellScript",
-    ]
+  #
+  # Withheld entirely when allow_stop_command is false, so a deployment where
+  # nobody may end a session cannot have one ended by a bug in the handler
+  # either. The Lambda declining and the Lambda being unable are different
+  # guarantees, and this is the one that survives a mistake in the code above.
+  dynamic "statement" {
+    for_each = var.allow_stop_command ? [1] : []
+
+    content {
+      sid     = "RequestGracefulStop"
+      effect  = "Allow"
+      actions = ["ssm:SendCommand"]
+      resources = [
+        local.instance_arn,
+        "${local.arn_prefix}:ssm:${var.aws_region}::document/AWS-RunShellScript",
+      ]
+    }
   }
 }
 

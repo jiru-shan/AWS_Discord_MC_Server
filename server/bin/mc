@@ -14,6 +14,10 @@ Usage: mc <command>
   console <command>   send a command to the server console (e.g. mc console list)
   logs [-f]           show the server log, -f to follow
   backup              take a backup now (safe while the server is running)
+  mods                list the installed mods
+  mods sync           re-download the configured mods now
+  version             the Minecraft version installed, and the one configured
+  upgrade             install the configured minecraft_version now
   stop                save, back up and power the instance off
   maintenance-stop    stop the server but leave the instance running
   start               start the server
@@ -44,6 +48,31 @@ case "$cmd" in
     ;;
   backup)
     "$INSTALL_DIR/bin/backup.sh"
+    ;;
+  version)
+    echo "installed:  $(installed_game_version 2>/dev/null || echo 'unrecorded')"
+    echo "configured: ${MINECRAFT_VERSION:-latest}"
+    ;;
+  upgrade)
+    # Forced, so it also covers the two cases the boot-time check declines:
+    # minecraft_version = "latest", and a jar whose version was never recorded.
+    [ "${1:-}" = "--yes" ] || {
+      echo "This replaces the server jar and backs the world up first."
+      echo "Worlds do not downgrade; the backup is the only way back."
+      echo "Re-run as: mc upgrade --yes"
+      exit 1
+    }
+    systemctl is-active --quiet minecraft.service       && die "stop the server first: mc maintenance-stop"
+    FORCE_JAR_REINSTALL=true "$INSTALL_DIR/bin/update-server-jar.sh"
+    ;;
+  mods)
+    # Takes effect on the next server start either way: Fabric reads the mods
+    # directory once, at launch.
+    case "${1:-list}" in
+      list) node "$INSTALL_DIR/bin/install-mods.js" --list ;;
+      sync) node "$INSTALL_DIR/bin/install-mods.js" ;;
+      *)    die "usage: mc mods [list|sync]" ;;
+    esac
     ;;
   stop)
     "$INSTALL_DIR/bin/request-stop.sh"

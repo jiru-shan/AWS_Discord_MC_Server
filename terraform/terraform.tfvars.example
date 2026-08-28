@@ -20,7 +20,19 @@ accept_minecraft_eula = true
 
 aws_region    = "us-west-2"
 project_name  = "minecraft"
-instance_type = "t4g.medium"
+instance_type = "t4g.small"
+
+# Fabric mods, reconciled with the mods directory on every boot. Modrinth
+# slugs, slug@version, or an https:// URL ending in .jar. These three are
+# server-side only -- players need install nothing -- and are what lets a 2 GB
+# t4g.small hold more than a couple of people. Set to [] to run vanilla.
+server_mods = ["lithium", "ferrite-core", "krypton"]
+
+# /stop ends the session for everyone playing. On a shared server, either take
+# it away entirely and let the server idle out on its own:
+#   allow_stop_command = false
+# or leave it to the people who run the server:
+#   discord_stop_role_ids = ["123456789012345678"]
 
 # --------------------------------------------------------------------------
 # How players reach it
