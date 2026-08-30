@@ -200,7 +200,9 @@ install_server_jar() {
   local url="${SERVER_JAR_URL:-}"
   if [ -n "$url" ]; then
     log "installing server jar from $url"
-    curl -fsSL --retry 3 -o "$jar.tmp" "$url" || die "failed to download the server jar"
+    # -m, like install_fabric_jar: a stalled download here hangs cloud-init,
+    # and a hang is not an exit, so nothing above ever powers the box off.
+    curl -fsSL -m 300 --retry 3 -o "$jar.tmp" "$url" || die "failed to download the server jar"
     [ -s "$jar.tmp" ] || die "downloaded server jar is empty"
     mv "$jar.tmp" "$jar"
     return 0

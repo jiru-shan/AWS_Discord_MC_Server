@@ -100,6 +100,20 @@ server_max_players = 10
 # This is what keeps the bill proportional to time actually played.
 idle_timeout_minutes = 15
 
+# Post a line to the channel whenever somebody joins or leaves. Off by default:
+# it is the only notification that fires during play rather than around it, so
+# give the webhook its own channel before turning it on. Needs the webhook above.
+discord_notify_player_events = false
+
+# The idle timeout only ever fires on an *empty* server, so a session with one
+# person still connected has nothing bounding it. These post to Discord at
+# uptime_warning_hours and again every interval after that, saying how long the
+# server has been up and who is on. They end nothing, so they are safe to leave
+# on; a warning that says nobody is online means the idle shutdown itself has
+# stopped working. Needs discord_webhook_url.
+uptime_warning_enabled = false
+uptime_warning_hours   = 6
+
 # An EC2 instance cannot be created stopped, so `terraform apply` always boots
 # it once -- that boot formats the world volume, installs Java and fetches
 # Fabric. false then carries on and starts the server, which is convenient and

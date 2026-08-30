@@ -192,7 +192,9 @@ sudo mc start && sudo mc logs -f
 
 `sudo mc mods` lists these as `manual` rather than `managed`. They are never
 removed by a sync — including when the Minecraft version changes, so these are
-yours to keep current.
+yours to keep current. [Making changes by hand](operations.md#making-changes-by-hand)
+covers the same distinction for the rest of the instance: what a boot restores
+from Terraform, and what it leaves alone.
 
 ## Server settings
 

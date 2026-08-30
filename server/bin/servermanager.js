@@ -20,7 +20,7 @@
 
 'use strict';
 
-const { spawn, execFileSync } = require('child_process');
+const { spawn, execFileSync, execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
@@ -72,8 +72,23 @@ function normalise(line) {
 function createSession(options) {
   const {
     idleMinutes = 15,
+    // A server that never finishes starting never prints the ready line, and
+    // the ready line is the only thing that arms the idle timer below. Left to
+    // itself such a box stays up with nobody on it and no countdown running:
+    // a mod hanging in init, a world that will not load, a JVM thrashing
+    // itself to death on a small instance. Generous, because a first boot
+    // generates the spawn area and a large modpack takes a while to load --
+    // anything past this is broken rather than slow.
+    startupMinutes = 30,
+    // Repeating reminder that a session is still running. 0 disables it.
+    // max_uptime_hours ends a session; this only mentions it, which is the
+    // right tool while people are still playing.
+    uptimeWarningHours = 0,
     onReady = () => {},
     onIdle = () => {},
+    onUptimeWarning = () => {},
+    onJoin = () => {},
+    onLeave = () => {},
     log = () => {},
     timers = { setTimeout, clearTimeout },
   } = options || {};
@@ -83,6 +98,36 @@ function createSession(options) {
   let stopped = false;
   let idleTimer = null;
   let idleFired = false;
+  let startupTimer = null;
+  let uptimeWarningTimer = null;
+
+  function clearUptimeWarningTimer() {
+    if (uptimeWarningTimer !== null) {
+      timers.clearTimeout(uptimeWarningTimer);
+      uptimeWarningTimer = null;
+    }
+  }
+
+  // Re-armed rather than an interval, so the injected timers need only
+  // setTimeout and so a stop between two warnings cancels the next one.
+  // `> 0` rather than `<= 0`: a non-numeric value is NaN, and NaN fails every
+  // comparison, so the negated form is the one that catches it.
+  function armUptimeWarning(hoursSoFar) {
+    if (stopped || !(uptimeWarningHours > 0)) return;
+    uptimeWarningTimer = timers.setTimeout(() => {
+      uptimeWarningTimer = null;
+      const elapsed = hoursSoFar + uptimeWarningHours;
+      onUptimeWarning(elapsed, players.size);
+      armUptimeWarning(elapsed);
+    }, uptimeWarningHours * 3600 * 1000);
+  }
+
+  function clearStartupTimer() {
+    if (startupTimer !== null) {
+      timers.clearTimeout(startupTimer);
+      startupTimer = null;
+    }
+  }
 
   function clearIdleTimer() {
     if (idleTimer !== null) {
@@ -107,7 +152,21 @@ function createSession(options) {
     if (stopped || idleFired) return;
     idleFired = true;
     clearIdleTimer();
+    clearStartupTimer();
     onIdle(message);
+  }
+
+  // Armed at creation rather than on ready, because catching a server that
+  // never reaches ready is the entire point. Disabled alongside the idle
+  // shutdown: idleMinutes = 0 means "never power this box off by itself", and
+  // that has to stay true however the boot goes.
+  armUptimeWarning(0);
+
+  if (idleMinutes > 0 && startupMinutes > 0) {
+    startupTimer = timers.setTimeout(() => {
+      startupTimer = null;
+      fireIdle(`Server did not finish starting within ${startupMinutes} minutes.`);
+    }, startupMinutes * 60 * 1000);
   }
 
   return {
@@ -117,6 +176,7 @@ function createSession(options) {
 
       if (!ready && PATTERNS.READY.test(line)) {
         ready = true;
+        clearStartupTimer();
         onReady();
         // Nobody can have joined yet, but check rather than assume: this is the
         // path that shuts down a server nobody ever connected to.
@@ -126,17 +186,27 @@ function createSession(options) {
 
       let match = line.match(PATTERNS.JOINED);
       if (match) {
-        players.add(match[1]);
-        log(`${match[1]} joined (${players.size} online)`);
+        const name = match[1];
+        // Fire the callback only on a real change. The server can repeat a
+        // join line, and the Set quietly absorbs it -- so without this a
+        // duplicate would announce somebody who was already here.
+        const arrived = !players.has(name);
+        players.add(name);
+        log(`${name} joined (${players.size} online)`);
         clearIdleTimer();
+        if (arrived) onJoin(name, players.size);
         return 'join';
       }
 
       match = line.match(PATTERNS.LEFT);
       if (match) {
-        players.delete(match[1]);
-        log(`${match[1]} left (${players.size} online)`);
+        const name = match[1];
+        // delete() reports whether the player was actually counted, which is
+        // how a leave for somebody who never joined stays silent.
+        const departed = players.delete(name);
+        log(`${name} left (${players.size} online)`);
         if (players.size === 0) armIdleTimer('last player left');
+        if (departed) onLeave(name, players.size);
         return 'leave';
       }
 
@@ -154,12 +224,59 @@ function createSession(options) {
     stop() {
       stopped = true;
       clearIdleTimer();
+      clearStartupTimer();
+      clearUptimeWarningTimer();
     },
 
     isReady: () => ready,
     playerCount: () => players.size,
     playerNames: () => Array.from(players),
     idleArmed: () => idleTimer !== null,
+    startupArmed: () => startupTimer !== null,
+    uptimeWarningArmed: () => uptimeWarningTimer !== null,
+  };
+}
+
+/**
+ * Serialised, coalescing sender for messages that arrive faster than they can
+ * be delivered.
+ *
+ * notify() is synchronous, which is right for the handful of lifecycle
+ * messages and wrong for one per join: while curl runs, this process is not
+ * reading the server's stdout, and a stdout pipe that fills stops the server
+ * itself. So player events go through here instead -- one request at a time,
+ * with everything that arrived during the last one folded into the next, which
+ * also keeps a reconnect storm inside Discord's rate limit.
+ *
+ * `send` is injected, so the queue is testable without spawning anything.
+ */
+function createEventQueue({ send, max = 20, log = () => {} }) {
+  const pending = [];
+  let inFlight = false;
+
+  function flush() {
+    if (inFlight || pending.length === 0) return;
+    inFlight = true;
+    const message = pending.splice(0).join('\n');
+    send(message, (err) => {
+      inFlight = false;
+      if (err) log(`notification failed: ${err.message}`);
+      // Anything that queued up while that was away goes now, as one message.
+      flush();
+    });
+  }
+
+  return {
+    push(message) {
+      pending.push(message);
+      // Bounded: an unreachable webhook must not let this grow without limit.
+      // Dropping the oldest is the right end to lose -- the newest events are
+      // the ones that describe who is actually on the server now.
+      if (pending.length > max) pending.splice(0, pending.length - max);
+      flush();
+    },
+    pendingCount: () => pending.length,
+    isSending: () => inFlight,
   };
 }
 
@@ -168,14 +285,28 @@ function createSession(options) {
 // --------------------------------------------------------------------------
 
 function main() {
+  // A value that does not parse must not become NaN. NaN fails every "<= 0"
+  // guard -- NaN <= 0 is false -- and setTimeout(fn, NaN) fires on the next
+  // tick, so a typo in idle_timeout_minutes would stop the server seconds
+  // after it came up rather than falling back to the documented default.
+  const number = (value, fallback) => {
+    const parsed = parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+
   const config = {
     serverDir: process.env.SERVER_DIR || '/srv/minecraft/server',
     serverJar: process.env.SERVER_JAR || 'server.jar',
     javaBin: process.env.JAVA_BIN || 'java',
-    heapMb: parseInt(process.env.JAVA_HEAP_MB || '2048', 10),
-    idleMinutes: parseFloat(process.env.IDLE_TIMEOUT_MINUTES || '15'),
-    stopTimeoutSeconds: parseInt(process.env.STOP_TIMEOUT_SECONDS || '120', 10),
-    maxUptimeHours: parseFloat(process.env.MAX_UPTIME_HOURS || '0'),
+    heapMb: Math.round(number(process.env.JAVA_HEAP_MB, 2048)),
+    idleMinutes: number(process.env.IDLE_TIMEOUT_MINUTES, 15),
+    stopTimeoutSeconds: Math.round(number(process.env.STOP_TIMEOUT_SECONDS, 120)),
+    maxUptimeHours: number(process.env.MAX_UPTIME_HOURS, 0),
+    startupMinutes: number(process.env.STARTUP_TIMEOUT_MINUTES, 30),
+    // Terraform writes 0 here when uptime_warning_enabled is false.
+    uptimeWarningHours: number(process.env.UPTIME_WARNING_HOURS, 0),
+    // Terraform writes false here when there is no webhook to post to.
+    notifyPlayerEvents: (process.env.NOTIFY_PLAYER_EVENTS || 'false') === 'true',
     shutdownOnCrash: (process.env.SHUTDOWN_ON_CRASH || 'true') === 'true',
     notifyScript: process.env.NOTIFY_SCRIPT || '/opt/minecraft/bin/notify.sh',
     // The unit runs as root so that ExecStopPost can power the box off. The
@@ -198,6 +329,18 @@ function main() {
     } catch (err) {
       log(`notification failed: ${err.message}`);
     }
+  };
+
+  // One request at a time, so a slow webhook can never stop this process
+  // reading the server's stdout. See createEventQueue above.
+  const playerEvents = createEventQueue({
+    log,
+    send: (message, done) =>
+      execFile(config.notifyScript, [message], { timeout: 15000 }, done),
+  });
+
+  const notifyPlayerEvent = (message) => {
+    if (config.notifyPlayerEvents) playerEvents.push(message);
   };
 
   const connectAddress = () => {
@@ -272,6 +415,15 @@ function main() {
     log(`failed to start the server process: ${err.message}`);
     notify(`Minecraft server failed to start: ${err.message}`);
     process.exitCode = 1;
+    // Node emits 'error' and 'close' -- but never 'exit' -- when the process
+    // could not be spawned at all: a missing or unreadable JAVA_BIN, a failed
+    // package install. Every teardown below hangs off 'exit', so without this
+    // none of it runs: no sentinel, and no exit either, because the console
+    // FIFO holds the event loop open. The unit would sit there "active",
+    // systemd would never reach ExecStopPost, and the instance would bill
+    // until somebody noticed. process.exitCode cannot save us on its own --
+    // nothing is going to drain the loop and honour it.
+    serverGone(null, null, { alreadyReported: true });
   });
 
   // The server can exit between the liveness check in beginStop and the write
@@ -316,6 +468,7 @@ function main() {
 
   const session = createSession({
     idleMinutes: config.idleMinutes,
+    startupMinutes: config.startupMinutes,
     log,
     onReady: () => {
       const address = connectAddress();
@@ -323,6 +476,31 @@ function main() {
       notify(address ? `Server is up. Connect at \`${address}\`` : 'Server is up.');
     },
     onIdle: (message) => beginStop('idle', message),
+    // Backticks rather than bold: a name may contain underscores, which Discord
+    // would otherwise read as italics.
+    onJoin: (name, online) => notifyPlayerEvent(`\`${name}\` joined (${online} online)`),
+    onLeave: (name, online) => notifyPlayerEvent(`\`${name}\` left (${online} online)`),
+    onUptimeWarning: (hours, online) => {
+      const unit = hours === 1 ? 'hour' : 'hours';
+      log(`uptime warning: ${hours} ${unit} with ${online} online`);
+      if (online > 0) {
+        const who = online === 1 ? 'somebody is' : `${online} people are`;
+        notify(
+          `The server has been up for ${hours} ${unit} and ${who} still online, ` +
+            'so the idle shutdown has not run. It bills for every one of those ' +
+            'hours -- `/stop` when you are done.'
+        );
+      } else {
+        // Nobody on and still running means the countdown that should have
+        // ended this session did not. That is the expensive failure, and it is
+        // worth saying plainly rather than repeating the generic reminder.
+        notify(
+          `The server has been up for ${hours} ${unit} with nobody online. It ` +
+            'should have shut itself down by now -- check `journalctl -u minecraft` ' +
+            'before it bills for much longer.'
+        );
+      }
+    },
   });
 
   // readline rather than testing raw chunks: stdout arrives in arbitrary
@@ -392,7 +570,17 @@ function main() {
     }, config.maxUptimeHours * 3600 * 1000);
   }
 
-  child.on('exit', (code, signal) => {
+  // Everything that has to happen once the server process is gone, however it
+  // went. Latched, and reachable from both 'exit' and 'error': those are two
+  // disjoint paths -- a process that ran and stopped emits the first, a
+  // process that never started emits the second -- and both have to end with
+  // this one exiting.
+  let finished = false;
+
+  function serverGone(code, signal, { alreadyReported = false } = {}) {
+    if (finished) return;
+    finished = true;
+
     if (killTimer) clearTimeout(killTimer);
     session.stop();
     if (uptimeTimer) clearTimeout(uptimeTimer);
@@ -403,11 +591,13 @@ function main() {
     if (crashed) {
       // Nothing asked for this exit. Report it, and by default still power the
       // box off so a crash loop cannot quietly run up a bill.
-      const tail = recentLog.slice(-15).join('\n');
-      notify(
-        `Minecraft server exited unexpectedly (code ${code}${signal ? `, ${signal}` : ''}).` +
-          (tail ? `\n\`\`\`\n${tail.slice(-1500)}\n\`\`\`` : '')
-      );
+      if (!alreadyReported) {
+        const tail = recentLog.slice(-15).join('\n');
+        notify(
+          `Minecraft server exited unexpectedly (code ${code}${signal ? `, ${signal}` : ''}).` +
+            (tail ? `\n\`\`\`\n${tail.slice(-1500)}\n\`\`\`` : '')
+        );
+      }
       if (config.shutdownOnCrash) {
         try {
           fs.writeFileSync(SHUTDOWN_SENTINEL, 'crash\n');
@@ -425,10 +615,12 @@ function main() {
     // gone: an exit that hangs is billed by the hour.
     if (consoleStream) consoleStream.destroy();
     process.exit(crashed ? code || 1 : 0);
-  });
+  }
+
+  child.on('exit', (code, signal) => serverGone(code, signal));
 }
 
-module.exports = { createSession, normalise, PATTERNS };
+module.exports = { createSession, createEventQueue, normalise, PATTERNS };
 
 if (require.main === module) {
   main();

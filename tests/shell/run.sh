@@ -11,7 +11,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-STUBS="$HERE/stubs"
+STUB_SRC="$HERE/stubs"
 
 PASS=0
 FAIL=0
@@ -122,7 +122,7 @@ ENVEOF
   unset STUB_SERVICE_ACTIVE STUB_IMDS_FAIL STUB_NO_PUBLIC_IP STUB_ROUTE53_FAIL \
         STUB_S3_FAIL STUB_SSM_FAIL STUB_WEBHOOK_FAIL SERVICE_RESULT \
         STUB_JAR_FAIL STUB_JAR_EMPTY STUB_FABRIC_META_FAIL STUB_FABRIC_GAME \
-        STUB_PUBLIC_IP
+        STUB_PUBLIC_IP STOP_BACKUP_TIMEOUT_SECONDS
 }
 
 teardown() { [ -n "${ROOT:-}" ] && rm -rf "$ROOT"; }
@@ -150,13 +150,25 @@ drain_fifo() {
 # Safety: never let a test reach the real shutdown binary.
 # --------------------------------------------------------------------------
 
+# The stubs run from a throwaway copy, not from the working tree, so that a
+# checkout which lost the executable bit -- a ZIP download of the repository, a
+# clone made under core.fileMode=false -- still shadows the real binaries.
+# Without this, `shutdown` resolves to /usr/sbin/shutdown and the guard below
+# stops the suite dead on a perfectly healthy tree.
+STUBS=$(mktemp -d)
+trap 'rm -rf "$STUBS"' EXIT
+cp "$STUB_SRC"/* "$STUBS/"
+chmod +x "$STUBS"/*
+
 export PATH="$STUBS:$PATH"
 resolved=$(command -v shutdown || true)
 case "$resolved" in
   "$STUBS/shutdown") ;;
   *)
     echo "REFUSING TO RUN: 'shutdown' resolves to '$resolved', not the stub." >&2
-    echo "Running the suite could power off this machine." >&2
+    echo "Running the suite could power off this machine, so it stops here." >&2
+    echo "This is the harness protecting you, not a failure of the project." >&2
+    echo "Something is shadowing PATH: check that $STUB_SRC/shutdown exists." >&2
     exit 1
     ;;
 esac
@@ -473,6 +485,73 @@ echo idle > "$RUN_DIR/idle-shutdown"
 SERVICE_RESULT=success run_script on-stop.sh
 check "an archive should exist" "$(ls "$DATA_MOUNT/backups"/*.tar.gz >/dev/null 2>&1 && echo 0 || echo 1)"
 assert_file "$STUB_DIR/shutdown-calls" "and then power off"
+teardown
+
+setup "a backup that never finishes cannot block the power-off"
+# systemd kills the whole stop sequence at TimeoutStopSec, and this backup has
+# no natural ceiling: tar, gzip and an S3 upload of a world that grows every
+# session. Once it runs past the budget the kill lands before `shutdown -h now`
+# and the instance is left up with no server on it and nothing to try again.
+mkdir -p "$SERVER_DIR/world"
+echo idle > "$RUN_DIR/idle-shutdown"
+cat > "$INSTALL_DIR/bin/backup.sh" <<'HANG'
+#!/usr/bin/env bash
+sleep 120
+HANG
+chmod +x "$INSTALL_DIR/bin/backup.sh"
+STOP_BACKUP_TIMEOUT_SECONDS=2 SERVICE_RESULT=success run_script on-stop.sh
+assert_file "$STUB_DIR/shutdown-calls" "a stuck backup must not keep the instance billing"
+assert_contains "$OUT" "exceeded 2s" "should say the backup was cut short"
+teardown
+
+# ==========================================================================
+# user-data: the first boot
+#
+# The one failure path in this project with no backstop. cloud-init runs this
+# once and never retries, and until it has installed minecraft.service there is
+# no ExecStopPost to power the instance off -- so anything that exits non-zero
+# here leaves a box billing with nothing running on it.
+# ==========================================================================
+
+render_user_data() { # -> $ROOT/user-data.sh, rooted in the throwaway tree
+  sed -e 's|${bootstrap_env}|AWS_REGION="us-west-2"|' \
+      -e 's|${payload_bucket}|test-bucket|g' \
+      -e 's|${payload_key}|payload/server.zip|g' \
+      -e 's|${region}|us-west-2|g' \
+      -e 's|${shutdown_on_crash}|true|g' \
+      -e "s|/etc/minecraft|$ROOT/etc/minecraft|g" \
+      -e "s|/opt/minecraft|$ROOT/opt/minecraft|g" \
+      "$REPO/terraform/templates/user_data.sh.tftpl" > "$ROOT/user-data.sh"
+}
+
+run_user_data() { # -> sets OUT and RC
+  OUT=$(cd "$ROOT" && PATH="$STUB_DIR/bin:$PATH" timeout 30 bash "$ROOT/user-data.sh" 2>&1)
+  RC=$?
+}
+
+setup "a first boot that dies before bootstrap.sh still powers the instance off"
+render_user_data
+mkdir -p "$STUB_DIR/bin"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$STUB_DIR/bin/dnf"
+chmod +x "$STUB_DIR/bin/dnf"
+run_user_data
+check "user-data should fail when the package install does" "$([ "$RC" -ne 0 ] && echo 0 || echo 1)" "exit was $RC"
+assert_file "$STUB_DIR/shutdown-calls" "a dnf hiccup must not leave an instance billing forever"
+assert_contains "$(cat "$STUB_LOG")" "shutdown -h +30" "with a window to read the log over SSM"
+teardown
+
+setup "a first boot that fails inside bootstrap.sh also powers the instance off"
+render_user_data
+mkdir -p "$STUB_DIR/bin" "$ROOT/opt/minecraft/payload/bin" "$STUB_DIR/s3-objects"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/bin/dnf"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/bin/unzip"
+printf 'payload\n' > "$STUB_DIR/s3-objects/server.zip"
+printf '#!/usr/bin/env bash\nexit 9\n' > "$ROOT/opt/minecraft/payload/bin/bootstrap.sh"
+chmod +x "$STUB_DIR/bin/dnf" "$STUB_DIR/bin/unzip" "$ROOT/opt/minecraft/payload/bin/bootstrap.sh"
+run_user_data
+assert_eq "9" "$RC" "the bootstrap exit status should survive"
+assert_file "$STUB_DIR/shutdown-calls" "the original guard must keep working"
+assert_contains "$(cat "$STUB_LOG")" "shutdown -h +30" "same half hour window"
 teardown
 
 # ==========================================================================

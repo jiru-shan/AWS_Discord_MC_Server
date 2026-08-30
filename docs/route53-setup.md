@@ -85,6 +85,19 @@ It must be a name nothing else in the zone uses — this project rewrites that
 record on every boot, so pointing it at a name shared with a website would take
 the website down.
 
+It must also be **fully qualified** and built from letters, digits, hyphens,
+underscores and dots: `mc.example.com`, not `mc`. Terraform refuses anything
+else at plan time rather than at boot. The reason is the IAM policy below,
+which pins the instance to this exact record through a condition key AWS
+evaluates against a normalised form of the name — lowercased, trailing dot
+removed, and every other character replaced by a `\three-digit octal` escape.
+Terraform can produce the first two and not the third, so a wildcard or an
+internationalised name would build a policy that never matches and fail every
+boot with an `AccessDenied` that names nothing useful. A single label is refused
+for a different reason: Terraform reads it as relative to the zone while the
+boot script sends it to the API as absolute, and the two would disagree about
+which record they mean.
+
 ## 4. Configure and apply
 
 In `terraform/terraform.tfvars`:
@@ -212,6 +225,12 @@ because the IAM policy names the zone, the record and the type explicitly. The
 usual cause is a `route53_zone_id` that does not match the zone the record name
 lives in. Confirm with `aws route53 list-hosted-zones` and re-apply — the
 policy is regenerated from the same variables, so an apply fixes both at once.
+
+The other way to get an `AccessDenied` here — a record name the condition key
+cannot express — is now refused by Terraform before it can be deployed, so an
+existing stack is the only way to still hit it. Re-running `terraform apply`
+after an upgrade will surface it as a validation error on
+`route53_record_name`.
 
 To see the underlying error rather than the script's summary:
 

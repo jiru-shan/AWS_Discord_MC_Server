@@ -14,8 +14,11 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const { spawnSync } = require('child_process');
 
-const { createSession, normalise, PATTERNS } = require(
+const { createSession, createEventQueue, normalise, PATTERNS } = require(
   path.join(__dirname, '..', 'server', 'bin', 'servermanager.js')
 );
 
@@ -51,6 +54,7 @@ function fakeTimers() {
 }
 
 const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
 
 /** Build a session plus a record of the callbacks it made. */
 function build(options = {}) {
@@ -320,4 +324,373 @@ test('the exported patterns are anchored on both sides', () => {
     assert.ok(pattern.source.endsWith('$'), `${name} must be anchored at end of line`);
     assert.ok(pattern.source.startsWith('\\]: '), `${name} must be anchored to the log prefix`);
   }
+});
+
+// --------------------------------------------------------------------------
+// Startup watchdog
+//
+// The ready line is the only thing that arms the idle countdown, so a server
+// that never prints it -- a mod hanging in init, a world that will not load, a
+// JVM thrashing on a small instance -- leaves a box with nobody on it, no
+// countdown running and nothing that will ever stop it.
+// --------------------------------------------------------------------------
+
+test('a server that never becomes ready still shuts the instance down', () => {
+  const { session, clock, events } = build({ startupMinutes: 30 });
+
+  session.handleLine(line('Preparing spawn area: 40%'));
+  clock.advance(29 * MINUTE);
+  assert.equal(events.filter((e) => e.startsWith('idle')).length, 0, 'still within the budget');
+  assert.equal(session.isReady(), false);
+
+  clock.advance(2 * MINUTE);
+  assert.equal(
+    events.filter((e) => e.startsWith('idle')).length,
+    1,
+    'a server stuck before the ready line must not bill forever'
+  );
+});
+
+test('the ready line disarms the startup watchdog', () => {
+  const { session, clock, events } = build({ startupMinutes: 30 });
+  assert.equal(session.startupArmed(), true, 'armed from the moment the session exists');
+
+  session.handleLine(READY_LINE);
+  assert.equal(session.startupArmed(), false);
+  assert.equal(session.idleArmed(), true, 'the ordinary idle countdown takes over');
+
+  // Well past the startup budget: whatever fires here has to be the idle
+  // timeout, not a watchdog that was never disarmed.
+  clock.advance(31 * MINUTE);
+  const idle = events.filter((e) => e.startsWith('idle'));
+  assert.equal(idle.length, 1);
+  assert.match(idle[0], /No players for 15 minutes/);
+});
+
+test('a slow start followed by a join is not cut short', () => {
+  const { session, clock, events } = build({ startupMinutes: 30 });
+
+  clock.advance(20 * MINUTE);
+  session.handleLine(READY_LINE);
+  session.handleLine(line('Alice joined the game'));
+
+  clock.advance(48 * 60 * MINUTE);
+  assert.equal(
+    events.filter((e) => e.startsWith('idle')).length,
+    0,
+    'somebody is playing; the watchdog must be long gone'
+  );
+});
+
+test('idleMinutes = 0 disables the startup watchdog too', () => {
+  // "Never power this box off by itself" has to hold however the boot goes.
+  const { session, clock, events } = build({ idleMinutes: 0, startupMinutes: 30 });
+  assert.equal(session.startupArmed(), false);
+
+  clock.advance(24 * 60 * MINUTE);
+  assert.equal(events.filter((e) => e.startsWith('idle')).length, 0);
+});
+
+test('stop() leaves no startup timer holding the event loop open', () => {
+  const { session, clock } = build({ startupMinutes: 30 });
+  assert.equal(clock.pendingCount(), 1);
+  session.stop();
+  assert.equal(session.startupArmed(), false);
+  assert.equal(clock.pendingCount(), 0);
+});
+
+test('a non-numeric idle timeout does not become NaN', () => {
+  // NaN <= 0 is false, so it slips past the "disabled" guard, and
+  // setTimeout(fn, NaN) fires on the next tick -- the server would stop
+  // seconds after coming up. main() coerces; this pins the arithmetic that
+  // makes the coercion necessary.
+  assert.equal(NaN <= 0, false);
+  assert.equal(Number.isFinite(parseFloat('fifteen')), false);
+});
+
+// --------------------------------------------------------------------------
+// Process supervision
+// --------------------------------------------------------------------------
+
+test('a server process that cannot be spawned still powers the instance off', () => {
+  // Node emits 'error' and 'close' but never 'exit' when the binary is not
+  // there, and every teardown hangs off 'exit'. Before this was handled the
+  // manager sat holding the console FIFO open: no sentinel, no exit, a unit
+  // stuck "active", ExecStopPost never reached, and an instance billing until
+  // somebody noticed.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-spawn-'));
+  const runDir = path.join(dir, 'run');
+  fs.mkdirSync(runDir);
+  fs.mkdirSync(path.join(dir, 'server'));
+
+  const result = spawnSync(
+    process.execPath,
+    [path.join(__dirname, '..', 'server', 'bin', 'servermanager.js')],
+    {
+      env: {
+        ...process.env,
+        RUN_DIR: runDir,
+        SERVER_DIR: path.join(dir, 'server'),
+        JAVA_BIN: path.join(dir, 'no-such-java'),
+        NOTIFY_SCRIPT: path.join(dir, 'no-such-notify'),
+        SHUTDOWN_ON_CRASH: 'true',
+      },
+      timeout: 30000,
+      encoding: 'utf8',
+    }
+  );
+
+  assert.notEqual(
+    result.signal,
+    'SIGTERM',
+    'the manager must exit on its own rather than be killed by the timeout'
+  );
+
+  const sentinel = path.join(runDir, 'idle-shutdown');
+  assert.equal(
+    fs.existsSync(sentinel),
+    true,
+    'no sentinel means on-stop.sh leaves the instance up and billing'
+  );
+  assert.equal(fs.readFileSync(sentinel, 'utf8').trim(), 'crash');
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// --------------------------------------------------------------------------
+// Long-session warnings
+//
+// The idle countdown only ever fires on an empty server, so a session with
+// somebody still connected has nothing bounding it but max_uptime_hours, which
+// is off by default and ends the session outright when it is on. This is the
+// part that just says something.
+// --------------------------------------------------------------------------
+
+test('a long session is warned about, and warned about again', () => {
+  const warnings = [];
+  const { session, clock } = build({
+    uptimeWarningHours: 6,
+    onUptimeWarning: (hours, online) => warnings.push({ hours, online }),
+  });
+  session.handleLine(READY_LINE);
+  session.handleLine(line('Alice joined the game'));
+
+  clock.advance(5 * HOUR);
+  assert.deepEqual(warnings, [], 'nothing before the interval is up');
+
+  clock.advance(1 * HOUR);
+  assert.deepEqual(warnings, [{ hours: 6, online: 1 }]);
+
+  clock.advance(6 * HOUR);
+  assert.deepEqual(warnings.at(-1), { hours: 12, online: 1 }, 'and again at twice the interval');
+
+  clock.advance(6 * HOUR);
+  assert.equal(warnings.length, 3);
+  assert.deepEqual(warnings.at(-1), { hours: 18, online: 1 });
+});
+
+test('a warning counts the players actually online', () => {
+  const warnings = [];
+  const { session, clock } = build({
+    uptimeWarningHours: 3,
+    onUptimeWarning: (hours, online) => warnings.push(online),
+  });
+  session.handleLine(READY_LINE);
+  session.handleLine(line('Alice joined the game'));
+  session.handleLine(line('Bob joined the game'));
+  clock.advance(3 * HOUR);
+  session.handleLine(line('Bob left the game'));
+  clock.advance(3 * HOUR);
+
+  assert.deepEqual(warnings, [2, 1]);
+});
+
+test('a warning on an empty server reports nobody online', () => {
+  // Reachable only when the idle shutdown is off or broken -- which is exactly
+  // the case worth being told about, so it must not be suppressed.
+  const warnings = [];
+  const { session, clock } = build({
+    idleMinutes: 0,
+    uptimeWarningHours: 2,
+    onUptimeWarning: (hours, online) => warnings.push({ hours, online }),
+  });
+  session.handleLine(READY_LINE);
+  clock.advance(2 * HOUR);
+  assert.deepEqual(warnings, [{ hours: 2, online: 0 }]);
+});
+
+test('long-session warnings are off unless asked for', () => {
+  const { session } = build();
+  assert.equal(session.uptimeWarningArmed(), false);
+});
+
+test('a non-numeric warning interval arms nothing', () => {
+  const { session } = build({ uptimeWarningHours: parseFloat('six') });
+  assert.equal(session.uptimeWarningArmed(), false, 'NaN must not arm a timer');
+});
+
+test('stopping cancels the next long-session warning', () => {
+  const warnings = [];
+  const { session, clock } = build({
+    uptimeWarningHours: 6,
+    onUptimeWarning: () => warnings.push(1),
+  });
+  session.handleLine(READY_LINE);
+  session.handleLine(line('Alice joined the game'));
+  clock.advance(6 * HOUR);
+  assert.equal(warnings.length, 1);
+
+  session.stop();
+  assert.equal(session.uptimeWarningArmed(), false);
+  assert.equal(clock.pendingCount(), 0, 'nothing left holding the event loop open');
+
+  clock.advance(48 * HOUR);
+  assert.equal(warnings.length, 1, 'no warnings after the session has ended');
+});
+
+// --------------------------------------------------------------------------
+// Join and leave notifications
+//
+// The same events the idle countdown runs on, handed out for posting. They
+// have to fire on a real change and only on a real change: the state machine
+// already tolerates a repeated join line and a leave for somebody who never
+// joined, and neither should reach a channel.
+// --------------------------------------------------------------------------
+
+test('joins and leaves are reported with the name and the new count', () => {
+  const seen = [];
+  const { session } = build({
+    onJoin: (name, online) => seen.push(`join ${name} ${online}`),
+    onLeave: (name, online) => seen.push(`leave ${name} ${online}`),
+  });
+  session.handleLine(READY_LINE);
+
+  session.handleLine(line('Alice joined the game'));
+  session.handleLine(line('Bob joined the game'));
+  session.handleLine(line('Alice left the game'));
+  session.handleLine(line('Bob left the game'));
+
+  assert.deepEqual(seen, [
+    'join Alice 1',
+    'join Bob 2',
+    'leave Alice 1',
+    'leave Bob 0',
+  ]);
+});
+
+test('a repeated join line is reported once', () => {
+  const seen = [];
+  const { session } = build({ onJoin: (name) => seen.push(name) });
+  session.handleLine(READY_LINE);
+  session.handleLine(line('Alice joined the game'));
+  session.handleLine(line('Alice joined the game'));
+  assert.deepEqual(seen, ['Alice'], 'the Set absorbs the duplicate; so must the notification');
+});
+
+test('a leave for somebody who never joined is not reported', () => {
+  const seen = [];
+  const { session } = build({ onLeave: (name) => seen.push(name) });
+  session.handleLine(READY_LINE);
+  session.handleLine(line('Ghost left the game'));
+  assert.deepEqual(seen, []);
+});
+
+test('a rejoin after a leave is reported again', () => {
+  const seen = [];
+  const { session } = build({
+    onJoin: (name) => seen.push(`in:${name}`),
+    onLeave: (name) => seen.push(`out:${name}`),
+  });
+  session.handleLine(READY_LINE);
+  session.handleLine(line('Alice joined the game'));
+  session.handleLine(line('Alice left the game'));
+  session.handleLine(line('Alice joined the game'));
+  assert.deepEqual(seen, ['in:Alice', 'out:Alice', 'in:Alice']);
+});
+
+test('a chat line that looks like a join is not reported', () => {
+  // Same anchoring that protects the shutdown decision protects this.
+  const seen = [];
+  const { session } = build({ onJoin: (name) => seen.push(name) });
+  session.handleLine(READY_LINE);
+  session.handleLine(line('<Mallory> Notch joined the game'));
+  assert.deepEqual(seen, []);
+  assert.equal(session.playerCount(), 0);
+});
+
+// --------------------------------------------------------------------------
+// The send queue
+//
+// notify() is synchronous, so one request per join would block this process
+// out of reading the server's stdout -- and a stdout pipe that fills stops the
+// server itself.
+// --------------------------------------------------------------------------
+
+/** A send() that hands back its completion callback so a test can hold it open. */
+function manualSender() {
+  const sent = [];
+  const waiting = [];
+  return {
+    sent,
+    send: (message, done) => {
+      sent.push(message);
+      waiting.push(done);
+    },
+    finishOne: (err) => waiting.shift()(err || null),
+    outstanding: () => waiting.length,
+  };
+}
+
+test('only one request is in flight at a time', () => {
+  const sender = manualSender();
+  const queue = createEventQueue({ send: sender.send });
+
+  queue.push('a');
+  queue.push('b');
+  queue.push('c');
+
+  assert.deepEqual(sender.sent, ['a'], 'b and c must wait');
+  assert.equal(sender.outstanding(), 1);
+  assert.equal(queue.isSending(), true);
+});
+
+test('everything queued during a send is coalesced into the next one', () => {
+  const sender = manualSender();
+  const queue = createEventQueue({ send: sender.send });
+
+  queue.push('Alice joined');
+  queue.push('Bob joined');
+  queue.push('Alice left');
+  sender.finishOne();
+
+  assert.deepEqual(sender.sent, ['Alice joined', 'Bob joined\nAlice left']);
+  sender.finishOne();
+  assert.equal(queue.isSending(), false, 'nothing left to send');
+  assert.equal(queue.pendingCount(), 0);
+});
+
+test('a failed send does not stall the queue', () => {
+  const logged = [];
+  const sender = manualSender();
+  const queue = createEventQueue({ send: sender.send, log: (m) => logged.push(m) });
+
+  queue.push('first');
+  queue.push('second');
+  sender.finishOne(new Error('webhook unreachable'));
+
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /webhook unreachable/);
+  assert.deepEqual(sender.sent, ['first', 'second'], 'the next batch still goes out');
+});
+
+test('the queue is bounded, and drops the oldest', () => {
+  const sender = manualSender();
+  const queue = createEventQueue({ send: sender.send, max: 3 });
+
+  queue.push('1');                       // sent immediately
+  for (const n of ['2', '3', '4', '5', '6']) queue.push(n);
+
+  assert.equal(queue.pendingCount(), 3, 'an unreachable webhook must not grow this forever');
+  sender.finishOne();
+  assert.deepEqual(sender.sent, ['1', '4\n5\n6'], 'the newest events are the ones kept');
 });

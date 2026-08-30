@@ -93,6 +93,14 @@ Lines are read through `readline` rather than by testing raw chunks. stdout
 arrives in arbitrary pieces, and a chunk boundary landing mid-line silently
 drops the event — a bug the original had.
 
+The cost of reading the log rather than asking the server is that a name the
+patterns do not match is a player the server does not know about. Usernames are
+at most 16 characters of `[A-Za-z0-9_]`, which is exact for Java Edition; a
+proxy that rewrites join lines, or a Bedrock bridge that prefixes names, would
+not be counted and the server would idle out from under them.
+`discord_notify_player_events` makes that visible, since it posts exactly what
+the counter saw and nothing else.
+
 ### The boot reconciles, it does not install
 
 `bootstrap.sh` runs once, from cloud-init, and never again. Anything that only
@@ -134,19 +142,47 @@ The sentinel above answers "was this stop intended". It does not answer "did the
 thing fail before it could write one", and every such gap is an instance that
 runs until somebody notices the bill.
 
-There are three, each closed separately:
+They fail in different places, so each is closed separately:
 
-- The server crashes: `servermanager.js` writes the sentinel itself on an
+- **The server crashes.** `servermanager.js` writes the sentinel itself on an
   unexpected exit.
-- The unit fails to start, typically because the address could not be published:
-  `on-stop.sh` reads systemd's `$SERVICE_RESULT` and powers off when it is
-  anything but `success`.
-- The very first boot fails, before `minecraft.service` exists at all: user-data
-  schedules `shutdown -h +30`, which caps the cost while leaving a window to
-  connect and read the log.
+- **The server process cannot be started at all** — a missing or unreadable
+  `JAVA_BIN`, a package install that did not take. Node reports that as an
+  `error` event and *never* an `exit`, so the teardown has to be reachable from
+  both events rather than hung off `exit` alone. Otherwise the manager sits
+  holding the console FIFO open, the unit stays `active`, `ExecStopPost` never
+  runs, and nothing at all powers the instance off.
+- **The server starts but never finishes starting** — a mod hanging in init, a
+  world that will not load, a JVM thrashing on a small instance. The ready line
+  is the only thing that arms the idle countdown, so there would be no
+  countdown running to catch it. A startup watchdog fires after 30 minutes
+  (`STARTUP_TIMEOUT_MINUTES`) and takes the same path an idle shutdown does.
+- **The unit fails to start**, typically because the address could not be
+  published: `on-stop.sh` reads systemd's `$SERVICE_RESULT` and powers off when
+  it is anything but `success`.
+- **The very first boot fails**, before `minecraft.service` exists at all. An
+  `EXIT` trap in user-data schedules `shutdown -h +30`, capping the cost while
+  leaving a window to connect and read the log. The trap covers the whole
+  script rather than only the `bootstrap.sh` call, because the likelier
+  failures — a `dnf` mirror, an instance role that has not finished propagating
+  — happen above it, and `set -e` would otherwise exit before the guard.
+- **The power-off is outrun by its own backup.** `on-stop.sh` backs the world
+  up before it calls `shutdown`, and systemd kills the entire stop sequence at
+  `TimeoutStopSec`. An unbounded tar, gzip and S3 upload of a world that grows
+  every session would eventually take the power-off with it, so the backup runs
+  under a `timeout` well inside that budget. A backup that cannot finish is
+  worth losing; the session it would otherwise cost is not.
 
-All three are governed by `shutdown_on_crash`, so a single setting turns the
-whole behaviour off while debugging.
+The crash, failed-spawn, failed-unit and first-boot paths are all governed by
+`shutdown_on_crash`, so one setting turns them off together while debugging. The
+startup watchdog follows `idle_timeout_minutes` instead — it is an idle
+shutdown that happens to fire before anybody could join — so setting that to `0`
+disables it along with the rest of the idle behaviour.
+
+None of this bounds a session with somebody actually connected: the idle
+countdown correctly will not fire while a player is online, however long they
+stay. `max_uptime_hours` ends such a session outright and is off by default;
+`uptime_warning_enabled` says so in Discord without ending anything.
 
 ### Configuration is parsed, not sourced
 
@@ -184,9 +220,12 @@ The Lambda has no `ec2:StopInstances` permission, deliberately. Stopping an
 instance under a running Minecraft server risks a half-written region file.
 
 Instead `/stop` uses `ssm:SendCommand` to run `request-stop.sh`, which writes
-the sentinel and stops the service. The world is saved and backed up, and only
-then does the instance power off. There is no path through this system that
-skips the save.
+the sentinel and stops the service. The server saves the world itself as it
+shuts down, `on-stop.sh` archives it, and only then does the instance power off.
+There is no path through this system that skips the save. The *backup* can be
+cut short — it runs under a timeout, because missing the power-off costs more
+than missing one archive — but the save is the server's own clean stop and is
+not optional.
 
 ### The Java process runs unprivileged
 

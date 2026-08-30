@@ -74,6 +74,7 @@ Related, with more context than a reference entry can carry:
 | [`discord_public_key`](#discord_public_key) | `string` | **required** | Public key from the General Information page of the Discord application. |
 | [`discord_webhook_url`](#discord_webhook_url) | `string` | `""` | Channel webhook the server posts status messages to. |
 | [`discord_bot_username`](#discord_bot_username) | `string` | `"Minecraft Server"` | Display name on webhook messages. |
+| [`discord_notify_player_events`](#discord_notify_player_events) | `bool` | `false` | Whether to post a message when a player joins or leaves. |
 | [`endpoint_type`](#endpoint_type) | `string` | `"function_url"` | How Discord reaches the Lambda. |
 | [`allow_stop_command`](#allow_stop_command) | `bool` | `true` | Whether /stop is available at all. |
 | [`discord_stop_role_ids`](#discord_stop_role_ids) | `list(string)` | `[]` | Discord role IDs allowed to run /stop, when it is enabled. |
@@ -90,6 +91,8 @@ Related, with more context than a reference entry can carry:
 | [`stop_after_provisioning`](#stop_after_provisioning) | `bool` | `false` | Whether the first boot ends with the instance powered off rather than with a server running. |
 | [`idle_timeout_minutes`](#idle_timeout_minutes) | `number` | `15` | Minutes with no players before the server saves, backs up and powers the instance off. |
 | [`max_uptime_hours`](#max_uptime_hours) | `number` | `0` | Hard cap on a single session, as a runaway-cost guard. |
+| [`uptime_warning_enabled`](#uptime_warning_enabled) | `bool` | `false` | Whether to post a Discord message when a session has been running a long time. |
+| [`uptime_warning_hours`](#uptime_warning_hours) | `number` | `6` | Hours between long-session warnings, when uptime_warning_enabled is true. |
 | [`shutdown_on_crash`](#shutdown_on_crash) | `bool` | `true` | Power the instance off if the server exits unexpectedly, so a crash cannot quietly bill for hours. |
 | [`server_motd`](#server_motd) | `string` | `"An on-demand Minecraft server"` | Message shown in the multiplayer server list. |
 | [`server_difficulty`](#server_difficulty) | `string` | `"normal"` | peaceful, easy, normal or hard. |
@@ -282,6 +285,8 @@ Hosted zone ID. Required when addressing_mode is route53.
 
 `string` · default `""`
 
+Constraint: route53_record_name must be a fully qualified name built from letters, digits, hyphens, underscores and dots, for example mc.example.com. Wildcards and internationalised domains cannot be expressed in the instance's IAM policy and would fail every boot with AccessDenied.
+
 Fully qualified name for the A record, for example mc.example.com. Required when addressing_mode is route53.
 
 ### `route53_ttl`
@@ -352,6 +357,25 @@ Channel webhook the server posts status messages to. Leave empty to disable noti
 `string` · default `"Minecraft Server"`
 
 Display name on webhook messages.
+
+### `discord_notify_player_events`
+
+`bool` · default `false`
+
+Whether to post a message when a player joins or leaves.
+
+Off by default because it is the only notification that fires during play
+rather than around it. A busy evening is a lot of messages, and a server
+people drift in and out of produces more than most channels want. Point the
+webhook at a channel of its own if you turn this on.
+
+Needs discord_webhook_url -- there is nowhere to post without one, and the
+setting is ignored when it is empty.
+
+Reports the same joins and leaves the idle shutdown counts, so it doubles
+as a way to see that counting working: if somebody is playing and no join
+was ever posted for them, the server does not know they are there and will
+idle out underneath them.
 
 ### `endpoint_type`
 
@@ -475,6 +499,36 @@ Minutes with no players before the server saves, backs up and powers the instanc
 `number` · default `0`
 
 Hard cap on a single session, as a runaway-cost guard. 0 disables it.
+
+### `uptime_warning_enabled`
+
+`bool` · default `false`
+
+Whether to post a Discord message when a session has been running a long
+time.
+
+max_uptime_hours ends a session outright, which is the wrong tool while
+people are still playing. This only speaks up: at uptime_warning_hours, and
+again every time that much longer passes, the server posts how long it has
+been up and how many people are on.
+
+An empty server already idles out on its own, so what this actually catches
+is the expensive case the idle timer cannot: a session with somebody still
+connected, hours after everyone stopped paying attention to it.
+
+Needs discord_webhook_url -- there is nowhere to post without one.
+
+### `uptime_warning_hours`
+
+`number` · default `6`
+
+Constraint: uptime_warning_hours must be greater than 0. Set uptime_warning_enabled = false to turn the warnings off.
+
+Hours between long-session warnings, when uptime_warning_enabled is true.
+
+The first arrives this many hours after the server starts and another every
+time that much longer passes, so 6 warns at 6, 12, 18 and so on. They stop
+when the server does. Ignored entirely when uptime_warning_enabled is false.
 
 ### `shutdown_on_crash`
 

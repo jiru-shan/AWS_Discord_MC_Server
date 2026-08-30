@@ -95,7 +95,7 @@ def _reply(content, ephemeral=False):
 
 
 def _raw_body(event):
-    """Return the request body exactly as Discord sent it.
+    """Return the request body exactly as Discord sent it, or None if it is undecodable.
 
     The signature covers the raw bytes, so the body must never be parsed and
     re-serialised before verification. Function URLs base64-encode the body only
@@ -104,7 +104,16 @@ def _raw_body(event):
     """
     body = event.get("body") or ""
     if event.get("isBase64Encoded"):
-        return base64.b64decode(body).decode("utf-8")
+        try:
+            return base64.b64decode(body).decode("utf-8")
+        except (ValueError, TypeError):
+            # Reachable before any authentication: a caller picks a binary
+            # content type, which is what makes the gateway base64 the body,
+            # and sends bytes that are not valid base64 or not UTF-8. Letting
+            # that raise turns an unsigned request into a 500 and a logged
+            # stack trace rather than the flat refusal every other malformed
+            # request gets.
+            return None
     return body
 
 
@@ -352,6 +361,9 @@ def lambda_handler(event, context):
 
     if not signature or not timestamp:
         return _http(401, "missing request signature")
+
+    if raw_body is None:
+        return _http(400, "malformed request body")
 
     if not ed25519_verify.verify_hex(
         PUBLIC_KEY, signature, (timestamp + raw_body).encode()

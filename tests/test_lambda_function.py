@@ -191,6 +191,34 @@ class TestSignatureVerification(unittest.TestCase):
             self.handler.lambda_handler(_event({"type": 99}), None)["statusCode"], 400
         )
 
+    # The body is decoded before anything is verified, so these run entirely
+    # unauthenticated. Anyone who can reach the URL can send them, and a raised
+    # exception here is a 500 and a stack trace in the logs where a flat
+    # refusal belongs.
+
+    def test_undecodable_base64_body_is_refused_not_raised(self):
+        event = _event({"type": 1})
+        event["body"] = "!!! not base64 !!!"
+        event["isBase64Encoded"] = True
+        self.assertEqual(self.handler.lambda_handler(event, None)["statusCode"], 400)
+
+    def test_non_utf8_body_is_refused_not_raised(self):
+        import base64
+
+        event = _event({"type": 1})
+        event["body"] = base64.b64encode(bytes([0xff, 0xfe, 0x00])).decode()
+        event["isBase64Encoded"] = True
+        self.assertEqual(self.handler.lambda_handler(event, None)["statusCode"], 400)
+
+    def test_an_undecodable_body_never_reaches_aws(self):
+        event = _event({"type": 2, "data": {"name": "start"}})
+        event["body"] = "!!! not base64 !!!"
+        event["isBase64Encoded"] = True
+        self.handler.lambda_handler(event, None)
+        self.assertEqual(
+            self.handler.ec2.started, [], "an unsigned request must not start the instance"
+        )
+
 
 class TestCommands(unittest.TestCase):
     def setUp(self):

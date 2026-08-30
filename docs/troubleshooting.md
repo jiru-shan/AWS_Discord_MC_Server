@@ -162,16 +162,27 @@ delegated to another registrar.
 ## The server shuts down while people are playing
 
 Player counting reads `joined the game` and `left the game` from the log. A mod
-or a proxy that changes those lines breaks the count.
+or a proxy that changes those lines breaks the count, and so does a name the
+pattern does not match: usernames are read as at most 16 characters of
+`[A-Za-z0-9_]`, which is exactly right for Java Edition and wrong for anything
+that prefixes or spaces names, such as a Bedrock bridge.
 
 ```bash
 sudo mc logs | grep -E 'joined the game|left the game'
 sudo mc logs | grep servermanager
 ```
 
-`[servermanager] no players (...)` lines tell you what it believes. If the count
-is wrong, raise `idle_timeout_minutes` as a stopgap and check whether a mod is
-rewriting join messages.
+`[servermanager] no players (...)` lines tell you what it believes. Compare the
+two greps: a join line the server logged with no matching
+`[servermanager] X joined` means the pattern did not match it, and that player
+is invisible to the shutdown decision.
+
+`discord_notify_player_events = true` makes this visible without a shell, since
+it posts exactly what the counter saw. Somebody playing with no join posted for
+them is the same symptom.
+
+If the count is wrong, raise `idle_timeout_minutes` as a stopgap and check
+whether a mod is rewriting join messages.
 
 ## The server shuts down immediately after starting
 
@@ -189,6 +200,14 @@ shutdown_on_crash = false
 
 Apply, then `/start`, then `sudo mc logs`.
 
+Shutting down after about **thirty minutes with no ready line in the log** is
+the startup watchdog rather than the idle timer. The server process was alive
+but never finished starting, so no idle countdown was ever armed and nothing
+else would have stopped it. The journal says
+`Server did not finish starting within 30 minutes`. The usual causes are a mod
+hanging during initialisation and a world that will not load; `sudo mc logs`
+will be sitting at whatever it got stuck on.
+
 ## The first boot failed and the instance is stopping in 30 minutes
 
 Deliberate. A first-boot failure happens before `minecraft.service` exists, so
@@ -205,40 +224,75 @@ sudo shutdown -c            # cancel the pending shutdown while you work
 
 Common causes, in order: `accept_minecraft_eula` not set to true; a
 `minecraft_version` Fabric does not publish a loader for; no route to the
-internet from the subnet.
+internet from the subnet. The guard also covers the steps *before*
+`bootstrap.sh` runs — installing `unzip`, downloading the payload from S3 — so a
+`dnf` mirror having a bad day or an instance role that has not finished
+propagating lands here too. `/var/log/cloud-init-output.log` shows which
+command failed, since user-data runs under `set -x`.
 
 To keep a failed first boot up indefinitely instead, set
 `shutdown_on_crash = false` and rebuild.
 
 ## The instance powered off without the server ever starting
 
-The unit failed rather than the server exiting. `on-stop.sh` powers the instance
-off when systemd reports the unit as failed, for the same billing reason as
-above -- most often because `announce-address.sh` could not publish the address.
+Either the unit failed, or the server process never came up. `on-stop.sh` powers
+the instance off in both cases, for the same billing reason as above.
 
 ```bash
 sudo journalctl -u minecraft --no-pager | tail -40
 ```
 
-See the Route 53 section above. Set `shutdown_on_crash = false` while debugging
-so the box stays up between attempts.
+- `Route 53 update failed` or a `die` from `announce-address.sh` — an
+  `ExecStartPre` failed, so systemd reports the unit as failed and `on-stop.sh`
+  acts on `$SERVICE_RESULT`. See the Route 53 section above.
+- `failed to start the server process: spawn ... ENOENT` — the JVM itself could
+  not be launched, usually a `java_package` that did not install or a bad
+  `JAVA_BIN`. The manager writes the crash sentinel and exits rather than
+  waiting on a process that will never run.
+- `Server did not finish starting within 30 minutes` — the startup watchdog;
+  see the section above.
+
+Set `shutdown_on_crash = false` while debugging so the box stays up between
+attempts.
 
 ## The instance stays running forever
 
+First, find out. `uptime_warning_enabled = true` posts to Discord once a session
+passes `uptime_warning_hours` and again at every multiple of it, which is the
+difference between noticing this and noticing it on the bill. A warning saying
+**nobody is online** means the idle shutdown itself is not working.
+
 The idle shutdown lives in `servermanager.js`, so it only works while that
-process is supervising the server.
+process is supervising the server:
 
 ```bash
 sudo systemctl status minecraft
 sudo mc logs | grep servermanager
 ```
 
-If you started the server by hand (`java -jar server.jar`) instead of through
-the service, nothing is watching it. Stop it and use `sudo mc start`.
+Going through the possibilities:
 
-Check the sentinel logic too: a stop that leaves the instance up is
-`maintenance-stop` behaviour, and `journalctl -u minecraft` will say
-`no shutdown sentinel; leaving the instance running for maintenance`.
+- **Started by hand.** `java -jar server.jar` in a shell has nothing watching
+  it. Stop it and use `sudo mc start`.
+- **A player the counter cannot see.** The commonest real cause. The count never
+  reaches zero, so the countdown never arms — see
+  [the section above](#the-server-shuts-down-while-people-are-playing).
+- **Somebody genuinely still connected.** Working as designed: the idle timeout
+  deliberately never fires while a player is online, however long they stay.
+  An AFK client left overnight bills all night. `max_uptime_hours` is the hard
+  cap; the uptime warning is the version that does not disconnect anyone.
+- **A maintenance stop.** `journalctl -u minecraft` will say
+  `no shutdown sentinel; leaving the instance running for maintenance`. That is
+  `mc maintenance-stop` and plain `systemctl stop minecraft` behaving correctly.
+- **`idle_timeout_minutes = 0`, or a masked refresh unit.** Zero disables the
+  automatic shutdown entirely. `systemctl is-enabled minecraft-refresh` reports
+  `masked` if somebody left it that way after a debugging session, in which case
+  the instance has stopped picking up configuration from Terraform at all.
+
+```bash
+sudo cat /etc/minecraft/config.env | grep -E 'IDLE_TIMEOUT|MAX_UPTIME|SHUTDOWN_ON_CRASH'
+systemctl is-enabled minecraft-refresh
+```
 
 ## `terraform apply` fails
 
@@ -278,6 +332,19 @@ sudo journalctl -u minecraft-refresh
 Settings already written into `server.properties` are the exception: that file
 is only generated when absent, so hand edits are never clobbered. Edit it
 directly, or delete it and restart.
+
+If `journalctl -u minecraft-refresh` shows nothing at all for this boot, check
+whether the unit was left masked after a debugging session — masking it is the
+documented way to hold a hand-edited `config.env` in place, and an instance left
+that way stops tracking Terraform entirely:
+
+```bash
+systemctl is-enabled minecraft-refresh     # "masked" is the problem
+sudo systemctl unmask minecraft-refresh.service
+```
+
+[Making changes by hand](operations.md#making-changes-by-hand) covers which
+files are restored on every start and which survive.
 
 ## Terrible performance
 

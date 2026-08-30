@@ -16,6 +16,31 @@
 
 set -euxo pipefail
 
+# A non-zero exit anywhere in this script leaves an instance cloud-init will
+# not retry and on which minecraft.service does not exist yet -- so the
+# ExecStopPost that normally powers the box off never runs, and it bills
+# indefinitely. The guard therefore covers the whole script, not just
+# bootstrap.sh: a dnf mirror hiccup or an instance role that has not finished
+# propagating is likelier than a bug in the bootstrap itself, and both land
+# above it.
+#
+# notify.sh may not exist yet -- the payload download is one of the steps this
+# catches -- and the webhook may not be readable until bootstrap.sh has fetched
+# the configuration, so the message is best-effort. The power-off is not.
+first_boot_failed() {
+  status=$?
+  [ "$status" -eq 0 ] && return 0
+
+  if [ -x /opt/minecraft/payload/bin/notify.sh ]; then
+    /opt/minecraft/payload/bin/notify.sh       "First boot failed (exit $status). The instance powers off in 30 minutes; run 'aws ssm start-session' and read /var/log/cloud-init-output.log to see why."       || true
+  fi
+
+  if [ "${shutdown_on_crash}" = "true" ]; then
+    shutdown -h +30
+  fi
+}
+trap first_boot_failed EXIT
+
 mkdir -p /etc/minecraft
 
 cat > /etc/minecraft/bootstrap.env <<'BOOTSTRAP_ENV'
@@ -36,21 +61,7 @@ unzip -qo "$work/payload.zip" -d /opt/minecraft/payload
 chmod +x /opt/minecraft/payload/bin/*
 rm -rf "$work"
 
-# A failure here happens before minecraft.service exists, so the ExecStopPost
-# that normally powers the instance off never runs and a broken first boot would
-# sit there billing indefinitely. Report it, then leave a half hour window to
-# connect with SSM and read this log before the instance stops itself.
-set +e
+# Failing here is handled by the EXIT trap above, which reports it and leaves a
+# half hour window to connect with SSM and read this log before the instance
+# stops itself.
 bash /opt/minecraft/payload/bin/bootstrap.sh
-bootstrap_status=$?
-set -e
-
-if [ "$bootstrap_status" -ne 0 ]; then
-  /opt/minecraft/payload/bin/notify.sh \
-    "First boot failed (exit $bootstrap_status). The instance powers off in 30 minutes; run 'aws ssm start-session' and read /var/log/cloud-init-output.log to see why." \
-    || true
-  if [ "${shutdown_on_crash}" = "true" ]; then
-    shutdown -h +30
-  fi
-  exit "$bootstrap_status"
-fi

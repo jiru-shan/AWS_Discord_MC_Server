@@ -121,6 +121,10 @@ locals {
     DISCORD_WEBHOOK_SSM_PARAM = var.discord_webhook_url != "" ? local.webhook_param_name : ""
     DISCORD_USERNAME          = var.discord_bot_username
 
+    # Gated on the webhook existing: without one every join would spawn a
+    # notify.sh that can only write to the journal, and joins are frequent.
+    NOTIFY_PLAYER_EVENTS = var.discord_webhook_url != "" ? tostring(var.discord_notify_player_events) : "false"
+
     DATA_MOUNT     = local.data_mount
     DATA_DEVICE    = local.data_device
     DATA_VOLUME_ID = aws_ebs_volume.data.id
@@ -140,8 +144,27 @@ locals {
     IDLE_TIMEOUT_MINUTES = tostring(var.idle_timeout_minutes)
     STOP_AFTER_PROVISION = tostring(var.stop_after_provisioning)
     MAX_UPTIME_HOURS     = tostring(var.max_uptime_hours)
+
+    # One value rather than two: the boolean only decides whether there is
+    # an interval at all, and 0 already means "no warnings" to the script.
+    UPTIME_WARNING_HOURS = var.uptime_warning_enabled ? tostring(var.uptime_warning_hours) : "0"
     SHUTDOWN_ON_CRASH    = tostring(var.shutdown_on_crash)
     STOP_TIMEOUT_SECONDS = "120"
+
+    # Two guards with no variable of their own, published here so they can be
+    # tuned without editing the scripts.
+    #
+    # The ready line is the only thing that arms the idle countdown, so a
+    # server that never prints it -- a mod hanging in init, a world that will
+    # not load -- would otherwise sit there with nobody on it and no timer
+    # running. Generous, because a first boot generates the spawn area.
+    STARTUP_TIMEOUT_MINUTES = "30"
+
+    # systemd kills the whole stop sequence at TimeoutStopSec (300s). The
+    # backup that runs before the power-off has no natural ceiling, so it is
+    # bounded well inside that budget: losing one backup is recoverable,
+    # missing the power-off is billed by the hour.
+    STOP_BACKUP_TIMEOUT_SECONDS = "180"
 
     SERVER_PORT                = tostring(var.server_port)
     SERVER_MOTD                = var.server_motd

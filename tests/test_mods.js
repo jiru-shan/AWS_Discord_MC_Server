@@ -26,6 +26,7 @@ const {
   chooseFile,
   syncMods,
   resolveMinecraftVersion,
+  directoryStore,
   MANIFEST,
 } = require(path.join(__dirname, '..', 'server', 'bin', 'install-mods.js'));
 
@@ -626,4 +627,73 @@ test('"latest" with nothing recorded asks Fabric for the newest stable', async (
     http: fakeHttp({ game: [{ version: '26.3-snapshot', stable: false }, { version: '26.2', stable: true }] }),
   });
   assert.strictEqual(version, '26.2');
+});
+
+// --------------------------------------------------------------------------
+// The filesystem boundary
+//
+// Filenames arrive from Modrinth's file listing and from the last segment of a
+// direct mod URL. Neither is ours, and this runs as root on every boot.
+// --------------------------------------------------------------------------
+
+test('a mod filename cannot escape the mods directory', () => {
+  const path = require('path');
+  const MODS = '/srv/minecraft/server/mods';
+  const touched = [];
+  const fakeFs = {
+    existsSync: (target) => { touched.push(target); return false; },
+    readFileSync: (target) => { touched.push(target); return Buffer.alloc(0); },
+    writeFileSync: (target) => touched.push(target),
+    renameSync: (from, to) => touched.push(from, to),
+    rmSync: (target) => touched.push(target),
+  };
+  const store = directoryStore(fakeFs, path, MODS);
+
+  // The property that matters is not "these inputs throw" -- a backslash is an
+  // ordinary character in a POSIX filename -- but that no input reaches a path
+  // outside the mods directory. Refusing and containing are both fine.
+  for (const hostile of [
+    '../../../../etc/cron.d/pwn.jar',
+    '../../../../root/.ssh/authorized_keys',
+    '/etc/cron.d/pwn.jar',
+    'sub/dir/nested.jar',
+    '..',
+    '.',
+    '',
+  ]) {
+    for (const call of [
+      () => store.write(hostile, Buffer.from('x')),
+      () => store.has(hostile),
+      () => store.remove(hostile),
+    ]) {
+      try {
+        call();
+      } catch (err) {
+        assert.match(err.message, /unsafe mod filename/, `unexpected error for ${JSON.stringify(hostile)}`);
+      }
+    }
+  }
+
+  for (const target of touched) {
+    assert.ok(
+      path.resolve(target).startsWith(path.resolve(MODS) + path.sep),
+      `escaped the mods directory: ${target}`
+    );
+  }
+});
+
+test('an ordinary mod filename still resolves inside the directory', () => {
+  const path = require('path');
+  const written = [];
+  const fakeFs = {
+    existsSync: () => true,
+    readFileSync: () => Buffer.alloc(0),
+    writeFileSync: (target) => written.push(target),
+    renameSync: () => {},
+    rmSync: () => {},
+  };
+  const store = directoryStore(fakeFs, path, '/mods');
+  store.write('lithium-fabric-0.15.0.jar', Buffer.from('x'));
+  assert.equal(written[0], path.join('/mods', 'lithium-fabric-0.15.0.jar.part'));
+  assert.equal(store.has('.managed.json'), true, 'the manifest is a normal name');
 });

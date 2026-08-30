@@ -90,10 +90,13 @@ die() {
 # --------------------------------------------------------------------------
 
 imds() {
+  # -m: the retry loop in public_ipv4 bounds the number of attempts, not how
+  # long any one of them can sit there. IMDS is link-local and answers in
+  # milliseconds or not at all, so five seconds is already generous.
   local token
-  token=$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+  token=$(curl -fsS -m 5 -X PUT "http://169.254.169.254/latest/api/token" \
     -H "X-aws-ec2-metadata-token-ttl-seconds: 300" 2>/dev/null) || return 1
-  curl -fsS -H "X-aws-ec2-metadata-token: $token" \
+  curl -fsS -m 5 -H "X-aws-ec2-metadata-token: $token" \
     "http://169.254.169.254/latest/meta-data/$1" 2>/dev/null
 }
 

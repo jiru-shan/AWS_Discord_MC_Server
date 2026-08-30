@@ -367,7 +367,18 @@ function httpsClient(https, { timeoutMs = 30000, maxRedirects = 3 } = {}) {
  * download cannot leave a half-jar for Fabric to choke on at the next start.
  */
 function directoryStore(fs, path, dir) {
-  const full = (name) => path.join(dir, name);
+  // Names reaching here come from Modrinth's file listing and from the last
+  // segment of a direct mod URL, so they are not ours to trust. path.join
+  // walks out of the directory happily on a "..", and this runs as root on
+  // every boot. basename() is the whole guard: a mod jar has no business
+  // naming a path.
+  const full = (name) => {
+    const safe = path.basename(String(name));
+    if (!safe || safe === '.' || safe === '..') {
+      throw new Error(`unsafe mod filename: ${name}`);
+    }
+    return path.join(dir, safe);
+  };
   return {
     has: (name) => fs.existsSync(full(name)),
     read(name) {
@@ -492,5 +503,6 @@ module.exports = {
   syncMods,
   resolveMinecraftVersion,
   readManifest,
+  directoryStore,
   MANIFEST,
 };

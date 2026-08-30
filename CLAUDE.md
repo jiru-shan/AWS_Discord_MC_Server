@@ -57,6 +57,39 @@ whole cost model rests on that last step working.
   world with no intended backup, and worlds do not downgrade. A failed upgrade
   keeps the old jar and starts on it.
 
+- **Three things stop the instance, and all of them have to keep working.**
+  The idle countdown is only the first. The second is the startup watchdog in
+  `createSession`: the ready line is the *only* thing that arms the idle timer,
+  so a server that never prints it -- a mod hanging in init, a world that will
+  not load -- has no countdown at all, and the watchdog is what catches it. The
+  third is `servermanager.js` exiting: a JVM that cannot be spawned emits
+  `error` and `close` but never `exit`, so the teardown is reachable from both
+  or the process sits holding the console FIFO open, the unit stays `active`,
+  and `ExecStopPost` never runs. Anything added to this file that can hang or
+  exit early belongs behind one of the three.
+
+- **The first boot has no backstop, so user-data guards itself.** Until
+  `bootstrap.sh` has installed `minecraft.service` there is no `ExecStopPost`
+  to power the box off, and cloud-init never retries. The `EXIT` trap in
+  `user_data.sh.tftpl` therefore covers the whole script, not just the
+  bootstrap call: a `dnf` mirror hiccup or an instance role that has not
+  finished propagating fails *above* it, and those are the likelier failures.
+
+- **`on-stop.sh` bounds its backup.** systemd kills the whole stop sequence at
+  `TimeoutStopSec`, and tar + gzip + an S3 upload of a world that grows every
+  session has no natural ceiling. If the backup overruns, the SIGKILL lands
+  before `shutdown -h now` and the instance is left up with nothing running on
+  it. Losing one backup is recoverable; missing the power-off is billed hourly.
+
+- **`notify()` is synchronous, and player events must never use it.** It shells
+  out to curl through `execFileSync`, which is fine for the handful of lifecycle
+  messages and wrong for one per join: while it runs, nothing is reading the
+  server's stdout, and a stdout pipe that fills blocks the JVM itself. Joins and
+  leaves go through `createEventQueue` instead -- one request in flight,
+  everything that arrives meanwhile coalesced into the next, bounded so an
+  unreachable webhook cannot grow it. Anything else that fires during play
+  belongs there too.
+
 - **Idle detection parses the server log through `readline`, not raw chunks.**
   The original tested `data.includes(...)` on stdout chunks, which silently
   drops an event whenever a chunk boundary lands mid-line.

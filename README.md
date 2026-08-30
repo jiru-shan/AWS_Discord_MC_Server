@@ -223,6 +223,28 @@ Three levers:
   a compromise between not shutting down during a bathroom break and not idling
   for an hour.
 
+### What keeps it from running up a bill
+
+The instance stops itself, and every way that could fail is closed separately —
+a crash, a JVM that will not launch, a server that never finishes starting, a
+first boot that dies before the shutdown path exists. [Architecture](docs/architecture.md#nothing-is-left-billing-after-a-failure)
+walks through each one.
+
+The case none of that covers is a session with somebody genuinely still
+connected: the idle timeout deliberately never fires while a player is online,
+so an AFK client left overnight bills all night. Two settings address it, and
+they are different tools:
+
+```hcl
+uptime_warning_enabled = true    # says so in Discord; ends nothing
+max_uptime_hours       = 12      # hard cap; disconnects whoever is playing
+```
+
+The warning is the one that is safe to leave on. It also tells you when the idle
+shutdown has broken, because a warning that says nobody is online means exactly
+that.
+
+
 ## Configuration
 
 Every setting lives in `terraform/terraform.tfvars`. **[The configuration
@@ -242,6 +264,7 @@ The ones people change first:
 | `addressing_mode`               | `elastic_ip`     | Or `route53` if you have a domain — [setup](docs/route53-setup.md) |
 | `server_mods`                   | 3 optimisation mods | Fabric mods, reconciled on every boot — [guide](docs/mods.md) |
 | `discord_webhook_url`           | `""`             | Post up/down messages to a channel — [setup](docs/notifications.md) |
+| `uptime_warning_enabled`        | `false`          | Warn in Discord when a session has run for hours — [why](#what-it-costs) |
 | `server_whitelist`              | `true` recommended | The port is open to the internet — [why](docs/operations.md#whitelisting-and-moderation) |
 | `server_ops`                    | `[]`             | Operators; they moderate in-game, so config only seeds the first |
 | `endpoint_type`                 | `function_url`   | Switch to `api_gateway` if the endpoint returns 403 — [why](docs/troubleshooting.md#the-endpoint-url-returns-403-accessdeniedexception) |
@@ -430,9 +453,9 @@ sudo mc status
 | [Discord setup](docs/discord-setup.md) | The manual half: creating the application, the bot, the webhook, and registering the commands. Ten steps. |
 | [Configuration reference](docs/configuration.md) | Every setting, with type, default and accepted values. Generated from `variables.tf`. |
 | [Route 53 setup](docs/route53-setup.md) | Running on `mc.example.com` instead of an IP: hosted zones, delegation, TTLs, costs. |
-| [Notifications](docs/notifications.md) | Getting "Server is up" and "Server stopped due to inactivity" posted to a channel. Optional, one minute to set up. |
+| [Notifications](docs/notifications.md) | Getting "Server is up", crashes, joins and leaves, and long-session warnings posted to a channel. Optional, one minute to set up. |
 | [Mods](docs/mods.md) | Adding mods, what players need, mod and server configuration, tuning for more players. |
-| [Operations](docs/operations.md) | Day to day: shells, backups, restores, applying changes, Minecraft upgrades, watching costs. |
+| [Operations](docs/operations.md) | Day to day: shells, backups, restores, applying changes, editing things by hand, Minecraft upgrades, watching costs. |
 | [Architecture](docs/architecture.md) | How the pieces fit and why they are arranged this way. |
 | [Troubleshooting](docs/troubleshooting.md) | Symptom-first, from "Discord will not accept the endpoint" to "the instance stays running forever". |
 

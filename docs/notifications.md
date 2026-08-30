@@ -47,10 +47,74 @@ Everything the instance can tell you, in the order you would normally meet it:
 | `Minecraft update to Y failed; still running X.` | the upgrade could not be completed; the old version is still serving |
 | `Minecraft upgrade to Y was skipped: the pre-upgrade backup failed.` | refused to upgrade because there would have been no way back |
 | `Setup finished. The server is installed and the instance is off` | first boot with `stop_after_provisioning = true` |
+| `` `Alice` joined (2 online) ``, `` `Alice` left (1 online) `` | a player joined or left, with `discord_notify_player_events = true` |
+| `The server has been up for N hours and … still online …` | `uptime_warning_enabled = true`, every `uptime_warning_hours` |
+| `The server has been up for N hours with nobody online.` | the same warning on an empty server, which means the idle shutdown did not run |
 
 The crash and failure messages are the ones that earn their keep. Without them
 a server that dies at 2am looks identical to a server that idled out normally,
 and you find out days later.
+
+### Join and leave messages
+
+Off by default, because it is the only notification that fires *during* play
+rather than around it:
+
+```hcl
+discord_notify_player_events = true
+```
+
+Each join and leave posts one line — `` `Alice` joined (2 online) `` — with the
+count after the change. Names are wrapped in backticks so an underscore in a
+username is not read as Discord italics.
+
+A busy evening is a lot of messages, and a server people drift in and out of
+produces more than most channels want mixed in with conversation. If you turn
+it on, point `discord_webhook_url` at a channel of its own.
+
+Two properties worth knowing:
+
+- **Messages can arrive batched.** Posts go out one request at a time, and
+  anything that happens while a request is in flight is folded into the next
+  message. Four people joining at once may arrive as one four-line post. This
+  is deliberate: the notifier must never block the process that supervises the
+  server, and it keeps a reconnect storm inside Discord's rate limit.
+- **These are the same events the shutdown decision runs on.** So the channel
+  doubles as a window onto the idle timer. If somebody is playing and no join
+  was ever posted for them, the server does not know they are there — and will
+  idle out from under them at the timeout. A join with no matching leave means
+  the opposite: the count is stuck above zero and the server will not idle out
+  at all.
+
+### Long-session warnings
+
+Off by default. Turn them on when you want to hear about a session that is
+still running hours later:
+
+```hcl
+uptime_warning_enabled = true
+uptime_warning_hours   = 6      # first warning at 6h, then 12h, 18h, ...
+```
+
+The idle countdown only ever fires on an *empty* server, so a session with one
+person still connected — or one AFK client nobody closed — has nothing bounding
+it except `max_uptime_hours`, which is off by default and, when on, ends the
+session outright while people may still be playing. These warnings are the
+in-between: they cost nothing, interrupt nobody, and put the running total
+where somebody will see it.
+
+The two wordings mean quite different things:
+
+- **with players online** — working as designed. Somebody is connected, so the
+  idle timer has correctly not fired. The message is a reminder, not a fault.
+- **with nobody online** — something is wrong. An empty server should have shut
+  itself down after `idle_timeout_minutes`. Read `journalctl -u minecraft` on
+  the instance; the usual cause is a join or leave line the log watcher never
+  saw, which leaves the player count stuck above zero.
+
+They stop when the server stops, and they need `discord_webhook_url` — without
+a webhook there is nowhere to post, and the warning is written only to the
+journal.
 
 ## Setting it up
 
@@ -111,7 +175,10 @@ sudo /opt/minecraft/bin/notify.sh "test message"
 discord_webhook_url = ""
 ```
 
-Notifications are skipped entirely and nothing else changes.
+Notifications are skipped entirely and nothing else changes. The settings that
+depend on a webhook stop mattering rather than needing to be turned off too:
+`discord_notify_player_events` is forced off by Terraform, and a long-session
+warning is written to the journal instead of a channel.
 
 ## Rotating it
 

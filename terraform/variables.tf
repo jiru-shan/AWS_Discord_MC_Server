@@ -195,6 +195,27 @@ variable "route53_record_name" {
   description = "Fully qualified name for the A record, for example mc.example.com. Required when addressing_mode is route53."
   type        = string
   default     = ""
+
+  # The instance's IAM policy pins this exact name through
+  # route53:ChangeResourceRecordSetsNormalizedRecordNames, which AWS matches
+  # against the name lowercased, stripped of its trailing dot, and with every
+  # character outside a-z 0-9 - _ . replaced by a 	hree-digit octal escape.
+  # lower(trimsuffix(...)) in main.tf covers the first two; it cannot produce
+  # the third. A name needing an escape -- a wildcard, an internationalised
+  # domain -- would therefore build a policy that never matches, and every boot
+  # would fail with an AccessDenied that names nothing useful.
+  #
+  # A single label is refused for a different reason: Terraform would read it
+  # as relative to the zone, while announce-address.sh sends it to the API
+  # verbatim, where it is absolute. The two would disagree about which record
+  # they mean.
+  validation {
+    condition = var.route53_record_name == "" || can(regex(
+      "^[A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?([.][A-Za-z0-9_]([A-Za-z0-9_-]*[A-Za-z0-9_])?)+[.]?$",
+      var.route53_record_name
+    ))
+    error_message = "route53_record_name must be a fully qualified name built from letters, digits, hyphens, underscores and dots, for example mc.example.com. Wildcards and internationalised domains cannot be expressed in the instance's IAM policy and would fail every boot with AccessDenied."
+  }
 }
 
 variable "route53_ttl" {
@@ -270,6 +291,27 @@ variable "discord_bot_username" {
   description = "Display name on webhook messages."
   type        = string
   default     = "Minecraft Server"
+}
+
+variable "discord_notify_player_events" {
+  description = <<-EOT
+    Whether to post a message when a player joins or leaves.
+
+    Off by default because it is the only notification that fires during play
+    rather than around it. A busy evening is a lot of messages, and a server
+    people drift in and out of produces more than most channels want. Point the
+    webhook at a channel of its own if you turn this on.
+
+    Needs discord_webhook_url -- there is nowhere to post without one, and the
+    setting is ignored when it is empty.
+
+    Reports the same joins and leaves the idle shutdown counts, so it doubles
+    as a way to see that counting working: if somebody is playing and no join
+    was ever posted for them, the server does not know they are there and will
+    idle out underneath them.
+  EOT
+  type        = bool
+  default     = false
 }
 
 variable "endpoint_type" {
@@ -408,6 +450,43 @@ variable "max_uptime_hours" {
   description = "Hard cap on a single session, as a runaway-cost guard. 0 disables it."
   type        = number
   default     = 0
+}
+
+variable "uptime_warning_enabled" {
+  description = <<-EOT
+    Whether to post a Discord message when a session has been running a long
+    time.
+
+    max_uptime_hours ends a session outright, which is the wrong tool while
+    people are still playing. This only speaks up: at uptime_warning_hours, and
+    again every time that much longer passes, the server posts how long it has
+    been up and how many people are on.
+
+    An empty server already idles out on its own, so what this actually catches
+    is the expensive case the idle timer cannot: a session with somebody still
+    connected, hours after everyone stopped paying attention to it.
+
+    Needs discord_webhook_url -- there is nowhere to post without one.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "uptime_warning_hours" {
+  description = <<-EOT
+    Hours between long-session warnings, when uptime_warning_enabled is true.
+
+    The first arrives this many hours after the server starts and another every
+    time that much longer passes, so 6 warns at 6, 12, 18 and so on. They stop
+    when the server does. Ignored entirely when uptime_warning_enabled is false.
+  EOT
+  type        = number
+  default     = 6
+
+  validation {
+    condition     = var.uptime_warning_hours > 0
+    error_message = "uptime_warning_hours must be greater than 0. Set uptime_warning_enabled = false to turn the warnings off."
+  }
 }
 
 variable "shutdown_on_crash" {
