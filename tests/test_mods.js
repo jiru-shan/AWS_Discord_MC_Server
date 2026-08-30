@@ -27,6 +27,9 @@ const {
   syncMods,
   resolveMinecraftVersion,
   directoryStore,
+  readJarMetadata,
+  unmetRequirements,
+  projectSupplying,
   MANIFEST,
 } = require(path.join(__dirname, '..', 'server', 'bin', 'install-mods.js'));
 
@@ -696,4 +699,346 @@ test('an ordinary mod filename still resolves inside the directory', () => {
   store.write('lithium-fabric-0.15.0.jar', Buffer.from('x'));
   assert.equal(written[0], path.join('/mods', 'lithium-fabric-0.15.0.jar.part'));
   assert.equal(store.has('.managed.json'), true, 'the manifest is a normal name');
+});
+
+// --------------------------------------------------------------------------
+// Requirements
+//
+// A mod whose hard dependency is missing does not run slower, it stops the
+// server booting -- the same failure a version-mismatched jar causes. Adding
+// spark without Fabric API is the real case: Modrinth resolves it happily and
+// Fabric then refuses to start.
+// --------------------------------------------------------------------------
+
+/** A version fixture with its own file name and declared dependencies. */
+function modVersion(name, { requires = [], sha1 = 'body' } = {}) {
+  return modrinthVersion({
+    project_id: `${name}-id`,
+    version_number: '1.0.0',
+    dependencies: requires.map((id) => ({ project_id: id, dependency_type: 'required' })),
+    files: [
+      {
+        filename: `${name}-1.0.0.jar`,
+        url: `https://cdn.modrinth.com/${name}-1.0.0.jar`,
+        primary: true,
+        hashes: { sha1 },
+      },
+    ],
+  });
+}
+
+test('a required dependency is installed alongside the mod that needs it', async () => {
+  const store = fakeStore();
+  const http = fakeHttp({
+    projects: {
+      spark: [modVersion('spark', { requires: ['fabric-api-id'] })],
+      'fabric-api-id': [modVersion('fabric-api')],
+    },
+    binaries: {
+      'https://cdn.modrinth.com/spark-1.0.0.jar': 'spark',
+      'https://cdn.modrinth.com/fabric-api-1.0.0.jar': 'fabric-api',
+    },
+  });
+
+  const result = await syncMods({
+    specs: ['spark'],
+    minecraft: '1.21.4',
+    store,
+    http,
+    sha1: () => 'body',
+  });
+
+  assert.deepEqual(store.names(), ['.managed.json', 'fabric-api-1.0.0.jar', 'spark-1.0.0.jar']);
+  assert.equal(result.failed.length, 0);
+  assert.deepEqual(
+    result.dependencies.map((d) => [d.spec, d.requiredBy]),
+    [['fabric-api-id', 'spark']],
+    'the summary has to say whose requirement it was'
+  );
+});
+
+test('a dependency of a dependency is followed', async () => {
+  const store = fakeStore();
+  const http = fakeHttp({
+    projects: {
+      top: [modVersion('top', { requires: ['mid-id'] })],
+      'mid-id': [modVersion('mid', { requires: ['base-id'] })],
+      'base-id': [modVersion('base')],
+    },
+    binaries: {
+      'https://cdn.modrinth.com/top-1.0.0.jar': 'a',
+      'https://cdn.modrinth.com/mid-1.0.0.jar': 'b',
+      'https://cdn.modrinth.com/base-1.0.0.jar': 'c',
+    },
+  });
+
+  await syncMods({ specs: ['top'], minecraft: '1.21.4', store, http, sha1: () => 'body' });
+  assert.deepEqual(store.names(), [
+    '.managed.json',
+    'base-1.0.0.jar',
+    'mid-1.0.0.jar',
+    'top-1.0.0.jar',
+  ]);
+});
+
+test('a requirement shared by two mods is fetched once', async () => {
+  const store = fakeStore();
+  const http = fakeHttp({
+    projects: {
+      one: [modVersion('one', { requires: ['shared-id'] })],
+      two: [modVersion('two', { requires: ['shared-id'] })],
+      'shared-id': [modVersion('shared')],
+    },
+    binaries: {
+      'https://cdn.modrinth.com/one-1.0.0.jar': 'a',
+      'https://cdn.modrinth.com/two-1.0.0.jar': 'b',
+      'https://cdn.modrinth.com/shared-1.0.0.jar': 'c',
+    },
+  });
+
+  const result = await syncMods({
+    specs: ['one', 'two'],
+    minecraft: '1.21.4',
+    store,
+    http,
+    sha1: () => 'body',
+  });
+  assert.equal(result.dependencies.length, 1, 'resolved once, not once per dependent');
+  const fetches = http.calls.filter((u) => u.includes('shared-id')).length;
+  assert.equal(fetches, 1);
+});
+
+test('a requirement the operator already listed is not fetched twice', async () => {
+  const store = fakeStore();
+  const http = fakeHttp({
+    projects: {
+      spark: [modVersion('spark', { requires: ['fabric-api-id'] })],
+      'fabric-api': [modVersion('fabric-api')],
+      'fabric-api-id': [modVersion('fabric-api')],
+    },
+    binaries: {
+      'https://cdn.modrinth.com/spark-1.0.0.jar': 'a',
+      'https://cdn.modrinth.com/fabric-api-1.0.0.jar': 'b',
+    },
+  });
+
+  const result = await syncMods({
+    specs: ['spark', 'fabric-api'],
+    minecraft: '1.21.4',
+    store,
+    http,
+    sha1: () => 'body',
+  });
+  assert.equal(result.dependencies.length, 0, 'it was already asked for by name');
+  assert.deepEqual(store.names(), ['.managed.json', 'fabric-api-1.0.0.jar', 'spark-1.0.0.jar']);
+});
+
+test('optional and embedded dependencies are left alone', async () => {
+  const store = fakeStore();
+  const http = fakeHttp({
+    projects: {
+      lithium: [
+        modrinthVersion({
+          project_id: 'lithium-id',
+          dependencies: [
+            { project_id: 'suggested-id', dependency_type: 'optional' },
+            { project_id: 'bundled-id', dependency_type: 'embedded' },
+            { project_id: 'clashes-id', dependency_type: 'incompatible' },
+          ],
+        }),
+      ],
+    },
+    binaries: { 'https://cdn.modrinth.com/lithium-1.0.0.jar': 'body' },
+  });
+
+  const result = await syncMods({
+    specs: ['lithium'],
+    minecraft: '1.21.4',
+    store,
+    http,
+    sha1: () => 'jar-body',
+  });
+  assert.equal(result.dependencies.length, 0);
+  assert.deepEqual(store.names(), ['.managed.json', 'lithium-1.0.0.jar']);
+});
+
+test('a requirement with no build for this version is reported, not silently skipped', async () => {
+  const store = fakeStore();
+  const http = fakeHttp({
+    projects: { spark: [modVersion('spark', { requires: ['missing-id'] })] },
+    binaries: { 'https://cdn.modrinth.com/spark-1.0.0.jar': 'a' },
+  });
+
+  const result = await syncMods({
+    specs: ['spark'],
+    minecraft: '1.21.4',
+    store,
+    http,
+    sha1: () => 'body',
+  });
+  assert.equal(result.failed.length, 1);
+  assert.match(result.failed[0].error, /required by spark/);
+});
+
+test('a dependency no longer needed is removed with its dependent', async () => {
+  const store = fakeStore({
+    'spark-1.0.0.jar': 'a',
+    'fabric-api-1.0.0.jar': 'b',
+    '.managed.json': JSON.stringify({
+      version: 1,
+      minecraft: '1.21.4',
+      mods: [
+        { spec: 'spark', file: 'spark-1.0.0.jar', sha1: 'body' },
+        { spec: 'fabric-api-id', file: 'fabric-api-1.0.0.jar', sha1: 'body', requiredBy: 'spark' },
+      ],
+    }),
+  });
+  const http = fakeHttp({ projects: {}, binaries: {} });
+
+  const result = await syncMods({
+    specs: [],
+    minecraft: '1.21.4',
+    store,
+    http,
+    sha1: () => 'body',
+  });
+  assert.deepEqual(result.removed.sort(), ['fabric-api-1.0.0.jar', 'spark-1.0.0.jar']);
+  assert.deepEqual(store.names(), ['.managed.json']);
+});
+
+test('the file actually does something when run as a script', () => {
+  // Every other test here imports the module, so `require.main === module` is
+  // false and main() never runs. That makes losing the entry point invisible:
+  // the suite stays green while the boot-time sync silently does nothing at
+  // all. This is the only test that runs it the way systemd does.
+  const fs = require('fs');
+  const os = require('os');
+  const { spawnSync } = require('child_process');
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mods-cli-'));
+  const result = spawnSync(
+    process.execPath,
+    [path.join(__dirname, '..', 'server', 'bin', 'install-mods.js'), '--list'],
+    { env: { ...process.env, SERVER_DIR: dir, SERVER_MODS: '' }, encoding: 'utf8', timeout: 30000 }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    /configured \(server_mods\)/,
+    'running it as a script must produce its listing'
+  );
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// --------------------------------------------------------------------------
+// Reading requirements out of the jars
+//
+// Modrinth said spark had no dependencies. Fabric then refused to start
+// because spark needs Fabric API. The jar knew all along.
+// --------------------------------------------------------------------------
+
+/** A readJarEntry over a plain {file: fabricModJson} map. */
+function fakeJars(map) {
+  return (file, entry) => {
+    if (entry !== 'fabric.mod.json') return null;
+    if (!(file in map)) return null;
+    return Buffer.from(JSON.stringify(map[file]));
+  };
+}
+
+test('a dependency the installed set does not provide is reported', () => {
+  const read = fakeJars({
+    'spark.jar': { id: 'spark', depends: { fabricloader: '*', 'fabric-api-base': '*' } },
+    'lithium.jar': { id: 'lithium', depends: { minecraft: '*' } },
+  });
+
+  const unmet = unmetRequirements(read, ['spark.jar', 'lithium.jar']);
+  assert.deepEqual(unmet, [{ file: 'spark.jar', id: 'fabric-api-base' }]);
+});
+
+test('the loader and the game are not requirements', () => {
+  const read = fakeJars({
+    'a.jar': { id: 'a', depends: { minecraft: '*', java: '*', fabricloader: '*' } },
+  });
+  assert.deepEqual(unmetRequirements(read, ['a.jar']), []);
+});
+
+test('a jar that provides an id satisfies the mod that wants it', () => {
+  const read = fakeJars({
+    'needs.jar': { id: 'needs', depends: { 'fabric-command-api-v2': '*' } },
+    'fabric-api.jar': { id: 'fabric-api', provides: ['fabric-command-api-v2', 'fabric-api-base'] },
+  });
+  assert.deepEqual(unmetRequirements(read, ['needs.jar', 'fabric-api.jar']), []);
+});
+
+test('an unreadable or non-Fabric jar is ignored rather than guessed at', () => {
+  const read = () => null;
+  assert.deepEqual(unmetRequirements(read, ['mystery.jar']), []);
+  assert.equal(readJarMetadata(() => Buffer.from('not json'), 'x.jar'), null);
+});
+
+test('every fabric-* id points at the Fabric API project', () => {
+  assert.equal(projectSupplying('fabric-api-base'), 'fabric-api');
+  assert.equal(projectSupplying('fabric-command-api-v2'), 'fabric-api');
+  assert.equal(projectSupplying('fabric'), 'fabric-api');
+  assert.equal(projectSupplying('some-other-mod'), null, 'guessing would install a stranger');
+});
+
+test('syncMods fetches what a jar says it needs, even when Modrinth does not', async () => {
+  const store = fakeStore();
+  const http = fakeHttp({
+    projects: {
+      // No declared dependencies at all -- exactly what Modrinth returns.
+      spark: [modVersion('spark')],
+      'fabric-api': [modVersion('fabric-api')],
+    },
+    binaries: {
+      'https://cdn.modrinth.com/spark-1.0.0.jar': 'spark',
+      'https://cdn.modrinth.com/fabric-api-1.0.0.jar': 'fabric-api',
+    },
+  });
+
+  const jars = {
+    'spark-1.0.0.jar': { id: 'spark', depends: { 'fabric-api-base': '*' } },
+    'fabric-api-1.0.0.jar': { id: 'fabric-api', provides: ['fabric-api-base'] },
+  };
+
+  const result = await syncMods({
+    specs: ['spark'],
+    minecraft: '1.21.4',
+    store,
+    http,
+    sha1: () => 'body',
+    readJarEntry: fakeJars(jars),
+  });
+
+  assert.deepEqual(store.names(), ['.managed.json', 'fabric-api-1.0.0.jar', 'spark-1.0.0.jar']);
+  assert.deepEqual(
+    result.dependencies.map((d) => d.spec),
+    ['fabric-api'],
+    'the jar asked for it even though the index did not'
+  );
+  assert.equal(result.failed.length, 0);
+});
+
+test('a requirement nothing can supply is named rather than left to crash the server', async () => {
+  const store = fakeStore();
+  const http = fakeHttp({
+    projects: { lonely: [modVersion('lonely')] },
+    binaries: { 'https://cdn.modrinth.com/lonely-1.0.0.jar': 'a' },
+  });
+
+  const result = await syncMods({
+    specs: ['lonely'],
+    minecraft: '1.21.4',
+    store,
+    http,
+    sha1: () => 'body',
+    readJarEntry: fakeJars({ 'lonely-1.0.0.jar': { id: 'lonely', depends: { 'some-lib': '*' } } }),
+  });
+
+  assert.equal(result.failed.length, 1);
+  assert.match(result.failed[0].error, /some-lib/);
 });

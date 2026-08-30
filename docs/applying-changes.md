@@ -38,7 +38,12 @@ aws ssm start-session --target $(terraform -chdir=terraform output -raw instance
 sudo mc status
 ```
 
-The instance has to be running, so `/start` first.
+The instance has to be running, so `/start` first. Two things that catch people
+the first time: `start-session` needs the
+[Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html),
+which installs separately from the AWS CLI, and every `aws` command needs a
+region -- `terraform -chdir=terraform output -raw shell_command` prints this one
+with the region already filled in.
 
 If you would rather not open a session at all, run the one command directly and
 read its output afterwards:
@@ -263,14 +268,15 @@ The full cycle is the reliable answer, but several things can be applied to a
 running instance:
 
 ```bash
-sudo mc mods sync          # re-resolve server_mods now (Fabric reads them at launch)
 sudo mc update             # re-download the scripts Terraform uploaded
 sudo mc upgrade --yes      # install the configured minecraft_version now
 sudo mc console <command>  # anything the server console accepts, live
 ```
 
-A restart re-reads `config.env` from SSM as well, because `minecraft.service`
-pulls in `minecraft-refresh.service`:
+A restart is the one that also re-reads `config.env` from SSM, because
+`minecraft.service` pulls in `minecraft-refresh.service`. That makes it the
+right answer after a `terraform apply`: the commands above act on the
+configuration the instance already has, which is still the previous one.
 
 ```bash
 sudo systemctl restart minecraft

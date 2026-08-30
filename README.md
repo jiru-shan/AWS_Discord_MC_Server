@@ -42,7 +42,11 @@ side, which has no API for creating an application; that part is
 - Linux, macOS or Windows. Everything here works on all three; on Windows, run
   the shell commands from Git Bash rather than PowerShell.
 - An AWS account, and either the AWS CLI configured (`aws configure`) or the
-  usual environment variables set.
+  usual environment variables set. **Include a default region.** Credentials
+  without one leave every `aws` command failing against a host called
+  `ssm.None.amazonaws.com`, which names everything except the problem;
+  `aws configure` asks for a region, and an environment-variable setup needs
+  `AWS_DEFAULT_REGION` alongside the key pair.
 - [Terraform](https://developer.hashicorp.com/terraform/install) 1.5 or newer.
 - Python 3.9 or newer, for the one-off command registration script. No packages
   to install. It is `python3` on Linux and macOS, usually `python` on Windows.
@@ -54,8 +58,11 @@ installs its own.
 ## Getting it running
 
 **1. Create the Discord application.** Follow
-[docs/discord-setup.md](docs/discord-setup.md) up to the point where you have a
-**public key**. Stop there and come back; the endpoint URL does not exist yet.
+[docs/discord-setup.md](docs/discord-setup.md) as far as **step 6**, which
+leaves you with a **public key** and, if you want notifications, a **webhook
+URL**. Both go in `terraform.tfvars` in the next step, so collecting them
+together saves applying twice. Stop before step 7 and come back; the endpoint
+URL does not exist yet.
 
 **2. Configure.**
 
@@ -74,7 +81,7 @@ Edit `terraform.tfvars`. The two required values are `discord_public_key` and
 
 | Set before the first apply | Why |
 | --- | --- |
-| `server_ops`, `server_whitelist_players` | Seed `ops.json` and `whitelist.json`, and only while those files do not exist. Once they do, the in-game `/op` and `/whitelist` own them |
+| `server_ops`, `server_whitelist_players` | Seed `ops.json` and `whitelist.json`, and only while those files do not exist. Once they do, the in-game `/op` and `/whitelist` own them. Use real Minecraft account names — a name Mojang does not know is skipped, with a line in the journal and no operator |
 | `server_motd`, `server_difficulty`, `server_gamemode`, `server_max_players`, `server_view_distance`, `server_simulation_distance`, `server_online_mode`, `server_whitelist` | Written into `server.properties` on the first boot and never rewritten |
 | `server_port` | The same, and it also moves the firewall rule and the address `/address` reports — so changing it later needs both an apply and a file edit |
 | `java_package`, `restore_from_s3` | Used once, while the instance is being built |
@@ -266,13 +273,14 @@ so an AFK client left overnight bills all night. Two settings address it, and
 they are different tools:
 
 ```hcl
-uptime_warning_enabled = true    # says so in Discord; ends nothing
-max_uptime_hours       = 12      # hard cap; disconnects whoever is playing
+uptime_warning_enabled = true    # the default; says so in Discord, ends nothing
+max_uptime_hours       = 12      # not the default; disconnects whoever is playing
 ```
 
-The warning is the one that is safe to leave on. It also tells you when the idle
-shutdown has broken, because a warning that says nobody is online means exactly
-that.
+The warning is on by default because it is safe to leave on: it ends nothing and
+interrupts nobody. It also tells you when the idle shutdown has broken, since a
+warning saying nobody is online means exactly that. `max_uptime_hours` is the
+one you opt into.
 
 
 ## Configuration
@@ -294,7 +302,7 @@ The ones people change first:
 | `addressing_mode`               | `elastic_ip`     | Or `route53` if you have a domain — [setup](docs/route53-setup.md) |
 | `server_mods`                   | 3 optimisation mods | Fabric mods, reconciled on every boot — [guide](docs/mods.md) |
 | `discord_webhook_url`           | `""`             | Post up/down messages to a channel — [setup](docs/notifications.md) |
-| `uptime_warning_enabled`        | `false`          | Warn in Discord when a session has run for hours — [why](#what-it-costs) |
+| `uptime_warning_enabled`        | `true`           | Warns in Discord when a session has run for hours. Ends nothing — [why](#what-it-costs) |
 | `server_whitelist`              | `true` recommended | The port is open to the internet — [why](docs/operations.md#whitelisting-and-moderation) |
 | `server_ops`                    | `[]`             | Operators; they moderate in-game, so config only seeds the first |
 | `endpoint_type`                 | `function_url`   | Switch to `api_gateway` if the endpoint returns 403 — [why](docs/troubleshooting.md#the-endpoint-url-returns-403-accessdeniedexception) |
@@ -373,8 +381,8 @@ Losing an optimisation is recoverable; a crash loop on a box with no open port
 is much less so. Failures are logged and never block the server from starting.
 
 On the instance, `sudo mc mods` lists what is installed and which entries are
-managed, and `sudo mc mods sync` re-runs the download without waiting for a
-boot.
+managed, and `sudo systemctl restart minecraft` applies a changed list without
+waiting for a boot.
 
 **[docs/mods.md](docs/mods.md)** is the full guide: which mods are worth
 adding, what players need installed on their end, editing mod and server

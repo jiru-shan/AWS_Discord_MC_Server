@@ -50,6 +50,21 @@ whole cost model rests on that last step working.
   file is kept as `.bak`. Adding a key to the managed list there means adding it
   to the list `bootstrap.sh` writes too, or the two drift.
 
+- **A seeded ops/whitelist entry needs a real UUID.** An entry with an empty
+  one looks correct on disk and grants nothing: the server cannot make a
+  profile from it, so on the boot that creates the world it rewrites the file
+  without it -- the one boot the seeding exists for. `seed-players.sh` resolves
+  names through Mojang, or derives them locally when `online-mode` is false,
+  and leaves out anything it cannot resolve rather than writing a dud.
+
+- **Modrinth's dependency list is not trustworthy; the jar is.** `spark`
+  declares no dependencies there and still refuses to load without Fabric API,
+  which is a crash loop rather than a slow server. `install-mods.js` therefore
+  reads `fabric.mod.json` out of each downloaded jar and fetches whatever the
+  installed set does not provide. Only `fabric-*` ids are mapped to a project
+  (they all come from Fabric API); anything else is named in the journal rather
+  than guessed at, because guessing installs a stranger's mod.
+
 - **Mods are reconciled, not installed once.** `install-mods.js` runs as an
   `ExecStartPre` on every boot and makes `mods/` match `server_mods`. Two rules
   are load-bearing: a jar with no build for the running Minecraft version is

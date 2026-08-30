@@ -107,3 +107,42 @@ class TestVerify(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NonCanonicalEncodingTestCase(unittest.TestCase):
+    """Field elements must be reduced. RFC 8032 requires rejecting encodings
+    that are not canonical; the scalar half is covered above, this is the point
+    half, where a y at or beyond p encodes a value the curve has no room for.
+    """
+
+    def setUp(self):
+        key_hex, message_hex, signature_hex = VECTORS[1]
+        self.key = bytes.fromhex(key_hex)
+        self.message = bytes.fromhex(message_hex)
+        self.signature = bytes.fromhex(signature_hex)
+
+    def _signature_with_r(self, r_bytes):
+        return r_bytes + self.signature[32:]
+
+    def test_a_point_with_y_equal_to_p_is_rejected(self):
+        r = ed25519_verify.P.to_bytes(32, "little")
+        self.assertFalse(ed25519_verify.verify(self.key, self._signature_with_r(r), self.message))
+
+    def test_a_point_with_y_above_p_is_rejected(self):
+        r = (ed25519_verify.P + 5).to_bytes(32, "little")
+        self.assertFalse(ed25519_verify.verify(self.key, self._signature_with_r(r), self.message))
+
+    def test_a_public_key_that_is_not_a_point_is_rejected(self):
+        bad_key = ed25519_verify.P.to_bytes(32, "little")
+        self.assertFalse(ed25519_verify.verify(bad_key, self.signature, self.message))
+
+    def test_an_all_zero_signature_is_rejected(self):
+        # R decodes to a real low-order point and s is zero, so this is the
+        # shape that slips past a verifier which never checks the equation.
+        self.assertFalse(ed25519_verify.verify(self.key, bytes(64), self.message))
+
+    def test_a_good_signature_does_not_carry_over_to_another_message(self):
+        self.assertTrue(ed25519_verify.verify(self.key, self.signature, self.message))
+        self.assertFalse(
+            ed25519_verify.verify(self.key, self.signature, self.message + b"!")
+        )

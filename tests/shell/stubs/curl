@@ -72,6 +72,22 @@ case "$url" in
     emit '[{"version":"1.0.1","stable":true}]'
     ;;
 
+  # ------------------------------------------------------------------
+  # Mojang profile lookup, for the UUIDs seed-players.sh needs
+  # ------------------------------------------------------------------
+
+  *api.mojang.com/users/profiles/minecraft/*)
+    [ "${STUB_MOJANG_FAIL:-0}" = "1" ] && exit 22
+    lookup_name="${url##*/}"
+    # Mojang answers 404 for a name nobody owns, which curl -f reports as 22.
+    case "$lookup_name" in
+      NoSuchPlayer*) exit 22 ;;
+    esac
+    # A distinct, stable 32 hex id per name, so two names never collide.
+    lookup_id=$("${PY:-python3}" -c 'import hashlib,sys;print(hashlib.md5(sys.argv[1].encode()).hexdigest())' "$lookup_name")
+    emit "{\"id\":\"$lookup_id\",\"name\":\"$lookup_name\"}"
+    ;;
+
   # A jar from server_jar_url, or any other direct download.
   https://*.jar)
     [ "${STUB_JAR_FAIL:-0}" = "1" ] && exit 22

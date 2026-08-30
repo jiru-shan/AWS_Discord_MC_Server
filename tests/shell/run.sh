@@ -147,7 +147,7 @@ ENVEOF
   unset STUB_SERVICE_ACTIVE STUB_IMDS_FAIL STUB_NO_PUBLIC_IP STUB_ROUTE53_FAIL \
         STUB_S3_FAIL STUB_SSM_FAIL STUB_WEBHOOK_FAIL SERVICE_RESULT \
         STUB_JAR_FAIL STUB_JAR_EMPTY STUB_FABRIC_META_FAIL STUB_FABRIC_GAME \
-        STUB_PUBLIC_IP STOP_BACKUP_TIMEOUT_SECONDS
+        STUB_PUBLIC_IP STOP_BACKUP_TIMEOUT_SECONDS STUB_MOJANG_FAIL
 }
 
 teardown() { [ -n "${ROOT:-}" ] && rm -rf "$ROOT"; }
@@ -911,6 +911,59 @@ out=$(cd "$ROOT" && bash -c "
 " 2>&1)
 assert_contains "$out" "rc=1" "no candidate must be an error"
 assert_not_contains "$out" "/dev/nvme0n1" "the root disk must never be offered"
+teardown
+
+setup "seeded entries carry a real UUID" 'SERVER_OPS="Alice"' 'SERVER_WHITELIST_PLAYERS="Bob"'
+# An entry with an empty uuid looks right and grants nothing: the server cannot
+# make a profile from it, and on the boot that creates the world it rewrites the
+# file without it -- the one boot this seeding exists for.
+run_script seed-players.sh
+ops=$(cat "$SERVER_DIR/ops.json")
+white=$(cat "$SERVER_DIR/whitelist.json")
+assert_not_contains "$ops"   '"uuid":""' "an op with no uuid is silently ignored by the server"
+assert_not_contains "$white" '"uuid":""' "and so is a whitelist entry"
+assert_contains "$(cat "$STUB_LOG")" "api.mojang.com/users/profiles/minecraft/Alice" "the name should be looked up"
+check "the op uuid should be a hyphenated UUID" \
+  "$(echo "$ops" | grep -qE '"uuid":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"' && echo 0 || echo 1)" \
+  "got: $ops"
+teardown
+
+setup "two names get two different UUIDs" 'SERVER_WHITELIST_PLAYERS="Alice,Bob"'
+run_script seed-players.sh
+distinct=$("$PY" -c "import json,sys;d=json.load(open(sys.argv[1]));print(len({e['uuid'] for e in d}))" "$SERVER_DIR/whitelist.json")
+assert_eq "2" "$distinct" "a shared uuid would make them the same player"
+teardown
+
+setup "a name Mojang does not know is left out" 'SERVER_OPS="Alice,NoSuchPlayer99"'
+run_script seed-players.sh
+ops=$(cat "$SERVER_DIR/ops.json")
+assert_contains "$ops" '"name":"Alice"' "the resolvable name is still seeded"
+assert_not_contains "$ops" "NoSuchPlayer99" "the unknown one must not be written"
+assert_contains "$OUT" "could not resolve a UUID" "and it should say so"
+teardown
+
+setup "nothing is written when no name resolves" 'SERVER_OPS="NoSuchPlayer1,NoSuchPlayer2"'
+run_script seed-players.sh
+assert_no_file "$SERVER_DIR/ops.json" "creating the file is what stops a later boot retrying"
+assert_contains "$OUT" "not creating it" "should explain why"
+teardown
+
+setup "a Mojang outage does not write dud entries" 'SERVER_OPS="Alice"'
+STUB_MOJANG_FAIL=1 run_script seed-players.sh
+assert_no_file "$SERVER_DIR/ops.json" "better absent, so the next boot can try again"
+teardown
+
+setup "offline mode derives the UUID locally" \
+  'SERVER_ONLINE_MODE="false"' 'SERVER_OPS="Alice"'
+run_script seed-players.sh
+ops=$(cat "$SERVER_DIR/ops.json")
+assert_not_contains "$(cat "$STUB_LOG")" "api.mojang.com" "an offline server must not consult Mojang"
+check "still a well-formed UUID" \
+  "$(echo "$ops" | grep -qE '"uuid":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"' && echo 0 || echo 1)" \
+  "got: $ops"
+check "version nibble should be 3, as Java's nameUUIDFromBytes produces" \
+  "$(echo "$ops" | grep -qE '"uuid":"[0-9a-f]{8}-[0-9a-f]{4}-3[0-9a-f]{3}-' && echo 0 || echo 1)" \
+  "got: $ops"
 teardown
 
 setup "seeding produces valid JSON and trims whitespace" \

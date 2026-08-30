@@ -96,7 +96,7 @@ Related, with more context than a reference entry can carry:
 | [`stop_after_provisioning`](#stop_after_provisioning) | `bool` | `false` | Whether the first boot ends with the instance powered off rather than with a server running. |
 | [`idle_timeout_minutes`](#idle_timeout_minutes) | `number` | `15` | Minutes with no players before the server saves, backs up and powers the instance off. |
 | [`max_uptime_hours`](#max_uptime_hours) | `number` | `0` | Hard cap on a single session, as a runaway-cost guard. |
-| [`uptime_warning_enabled`](#uptime_warning_enabled) | `bool` | `false` | Whether to post a Discord message when a session has been running a long time. |
+| [`uptime_warning_enabled`](#uptime_warning_enabled) | `bool` | `true` | Whether to post a Discord message when a session has been running a long time. |
 | [`uptime_warning_hours`](#uptime_warning_hours) | `number` | `6` | Hours between long-session warnings, when uptime_warning_enabled is true. |
 | [`shutdown_on_crash`](#shutdown_on_crash) | `bool` | `true` | Power the instance off if the server exits unexpectedly, so a crash cannot quietly bill for hours. |
 | [`manage_server_properties`](#manage_server_properties) | `bool` | `false` | Whether Terraform owns the server.properties settings, or only seeds them. |
@@ -234,6 +234,16 @@ hold more than a couple of people:
 A mod with no build for the running Minecraft version is skipped, and its
 jar removed if one was installed for an older version -- Fabric refuses to
 start rather than run a mismatched mod. Set this to [] to run vanilla.
+
+Requirements are handled for you. After each jar is downloaded its
+fabric.mod.json is read, and anything the installed set does not already
+provide is fetched too -- adding "spark" pulls in Fabric API, and the
+journal says which mod asked for it. Modrinth's own dependency list is
+consulted first and is not trusted alone: spark declares nothing there and
+still refuses to load without Fabric API, so the jar is the source of truth.
+
+A requirement nothing known can supply is named in the journal rather than
+installed on a guess.
 
 ### `java_heap_mb`
 
@@ -508,10 +518,11 @@ Hard cap on a single session, as a runaway-cost guard. 0 disables it.
 
 ### `uptime_warning_enabled`
 
-`bool` · default `false`
+`bool` · default `true`
 
 Whether to post a Discord message when a session has been running a long
-time.
+time. On by default: it ends nothing, interrupts nobody, and covers the one
+way this stack can bill without anybody noticing.
 
 max_uptime_hours ends a session outright, which is the wrong tool while
 people are still playing. This only speaks up: at uptime_warning_hours, and
@@ -522,7 +533,12 @@ An empty server already idles out on its own, so what this actually catches
 is the expensive case the idle timer cannot: a session with somebody still
 connected, hours after everyone stopped paying attention to it.
 
-Needs discord_webhook_url -- there is nowhere to post without one.
+Without discord_webhook_url there is nowhere to post, and the warning goes to
+the journal instead -- `journalctl -u minecraft`. It still fires, and it is
+not forced off the way discord_notify_player_events is: warnings are hours
+apart rather than one per join, and the line is worth recording on its own.
+A warning that says nobody is online means the idle shutdown has stopped
+working, which is worth knowing whether or not anyone reads a channel.
 
 ### `uptime_warning_hours`
 
@@ -683,7 +699,15 @@ s3://bucket/key of a backup tarball to unpack on first boot. Use this to migrate
 
 `bool` · default `false`
 
-Allow terraform destroy to delete the S3 bucket while it still holds backups.
+Allow terraform destroy to delete the S3 bucket while it still holds
+backups.
+
+This has to be applied before it counts. force_destroy is read from what
+Terraform already has recorded for the bucket, not from the variables
+passed to the destroy, so setting it here and going straight to
+`terraform destroy` still fails with BucketNotEmpty. Either apply it first
+and then destroy, or skip it and empty the bucket by hand:
+`aws s3 rm s3://<bucket>/ --recursive`.
 
 ### `cpu_credits`
 

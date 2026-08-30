@@ -294,6 +294,30 @@ sudo cat /etc/minecraft/config.env | grep -E 'IDLE_TIMEOUT|MAX_UPTIME|SHUTDOWN_O
 systemctl is-enabled minecraft-refresh
 ```
 
+## Every `aws` command says "Could not connect to the endpoint URL"
+
+```
+Could not connect to the endpoint URL: "https://ssm.None.amazonaws.com/"
+```
+
+The `None` is the region. Credentials are set but no default region is, so the
+CLI builds a hostname out of nothing. Terraform is unaffected -- it passes the
+region from `aws_region` explicitly -- which is why an apply can succeed while
+every command in these docs fails.
+
+```bash
+aws configure                       # asks for a region, among other things
+export AWS_DEFAULT_REGION=us-west-2 # or just set it for the session
+```
+
+The commands in these docs leave the region out, because it is yours to choose.
+Terraform prints ready-made ones with it already filled in:
+
+```bash
+terraform -chdir=terraform output -raw shell_command
+terraform -chdir=terraform output -raw logs_command
+```
+
 ## `terraform apply` fails
 
 **`no-public-subnet-found--set-subnet_id-explicitly`** — the account has no

@@ -88,13 +88,16 @@ Two properties worth knowing:
 
 ### Long-session warnings
 
-Off by default. Turn them on when you want to hear about a session that is
-still running hours later:
+On by default, at six hours:
 
 ```hcl
-uptime_warning_enabled = true
+uptime_warning_enabled = true   # the default
 uptime_warning_hours   = 6      # first warning at 6h, then 12h, 18h, ...
 ```
+
+They default on because they end nothing and interrupt nobody -- the cost of
+having them is one message every six hours on a session that is genuinely
+running that long.
 
 The idle countdown only ever fires on an *empty* server, so a session with one
 person still connected — or one AFK client nobody closed — has nothing bounding

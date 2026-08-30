@@ -189,7 +189,8 @@ disables it along with the rest of the idle behaviour.
 None of this bounds a session with somebody actually connected: the idle
 countdown correctly will not fire while a player is online, however long they
 stay. `max_uptime_hours` ends such a session outright and is off by default;
-`uptime_warning_enabled` says so in Discord without ending anything.
+`uptime_warning_enabled`, which is on by default, says so in Discord without
+ending anything.
 
 ### Configuration is parsed, not sourced
 

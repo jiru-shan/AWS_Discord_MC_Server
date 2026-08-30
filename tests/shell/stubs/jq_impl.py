@@ -59,6 +59,44 @@ def run_select(filter_text, raw_output):
     return 0
 
 
+def run_field(filter_text, raw_output):
+    """Evaluate a plain field read -- `.id`, or `.id // empty` -- over stdin.
+
+    seed-players.sh uses this shape to pull a UUID out of a Mojang profile
+    lookup. The `// empty` half matters: real jq prints nothing for a missing
+    key rather than the string "null", and the caller measures what it gets.
+    """
+    text = filter_text.strip()
+    alternative = text.endswith("// empty")
+    if alternative:
+        text = text[: -len("// empty")].strip()
+    if not text.startswith(".") or not text[1:].isidentifier():
+        return None
+
+    try:
+        document = json.load(sys.stdin)
+    except json.JSONDecodeError as err:
+        sys.stderr.write("stub jq: stdin is not JSON: " + str(err) + chr(10))
+        return 64
+    if not isinstance(document, dict):
+        sys.stderr.write("stub jq: a field read needs a JSON object" + chr(10))
+        return 64
+
+    value = document.get(text[1:])
+    if value is None:
+        # `.x` yields null; `.x // empty` yields nothing at all.
+        if not alternative:
+            print("null")
+        return 0
+
+    if raw_output and isinstance(value, str):
+        print(value)
+    else:
+        json.dump(value, sys.stdout)
+        sys.stdout.write(chr(10))
+    return 0
+
+
 def main(argv):
     args = list(argv)
     variables = {}
@@ -97,9 +135,12 @@ def main(argv):
         result = run_select(filter_text, raw_output)
         if result is not None:
             return result
+        result = run_field(filter_text, raw_output)
+        if result is not None:
+            return result
         sys.stderr.write(
             f"stub jq: unsupported stdin filter {filter_text!r}; "
-            "only the select-newest-stable shape is implemented\n"
+            "only the select-newest-stable and plain-field shapes are implemented\n"
         )
         return 64
 

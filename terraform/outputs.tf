@@ -46,7 +46,7 @@ output "next_steps" {
        the endpoint is live.
 
     2. Register the slash commands:
-         python scripts/register_commands.py
+         python3 scripts/register_commands.py
 
     3. In Discord, run /start. First boot installs Java and downloads the
        server, so allow around five minutes; later boots take about ninety

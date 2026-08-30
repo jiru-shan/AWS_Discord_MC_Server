@@ -76,7 +76,7 @@ Then `/stop` and `/start` in Discord. Or, without waiting for a boot:
 
 ```bash
 aws ssm start-session --target $(terraform -chdir=terraform output -raw instance_id)
-sudo mc mods sync              # re-resolve, download, prune
+sudo systemctl restart minecraft   # refresh the config, then re-resolve and prune
 sudo systemctl restart minecraft
 sudo mc mods                   # what is installed now
 sudo mc logs -f                # watch it come up

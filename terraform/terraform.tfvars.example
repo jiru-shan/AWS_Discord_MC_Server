@@ -117,8 +117,9 @@ discord_notify_player_events = false
 # uptime_warning_hours and again every interval after that, saying how long the
 # server has been up and who is on. They end nothing, so they are safe to leave
 # on; a warning that says nobody is online means the idle shutdown itself has
-# stopped working. Needs discord_webhook_url.
-uptime_warning_enabled = false
+# stopped working. Without discord_webhook_url it still fires, into the journal
+# rather than a channel.
+uptime_warning_enabled = true
 uptime_warning_hours   = 6
 
 # An EC2 instance cannot be created stopped, so `terraform apply` always boots

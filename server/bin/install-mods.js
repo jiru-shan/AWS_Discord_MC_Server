@@ -160,7 +160,94 @@ async function resolveSpec(parsed, { minecraft, http }) {
     url: file.url,
     sha1: (file.hashes && file.hashes.sha1) || null,
     title: `${parsed.slug} ${version.version_number}`,
+    projectId: version.project_id || null,
+    // What Modrinth says this build cannot run without. Only hard requirements:
+    // an optional dependency is a suggestion, and an embedded one is already
+    // inside the jar.
+    requires: requiredDependencies(version),
   };
+}
+
+/**
+ * The project ids a build hard-depends on.
+ *
+ * A dependency can name a specific version instead of a project; that form is
+ * ignored here, because resolving it would mean pinning a build the operator
+ * never asked for. The common case -- `spark` needing Fabric API -- names the
+ * project.
+ */
+function requiredDependencies(version) {
+  const listed = Array.isArray(version.dependencies) ? version.dependencies : [];
+  return listed
+    .filter((d) => d && d.dependency_type === 'required' && d.project_id)
+    .map((d) => d.project_id);
+}
+
+// --------------------------------------------------------------------------
+// What a jar actually needs
+//
+// Modrinth's dependency list is the obvious place to look and it is not
+// enough: spark declares nothing there and still refuses to load without
+// Fabric API. The jar's own fabric.mod.json is where the truth is, so it is
+// read after download and checked against what is actually installed.
+// --------------------------------------------------------------------------
+
+// Supplied by the loader and the game, never by a jar in mods/.
+const BUILT_IN = new Set(['minecraft', 'java', 'fabricloader', 'fabric-loader']);
+
+/** The ids a jar declares, and the ids it cannot run without. */
+function readJarMetadata(readEntry, file) {
+  let raw;
+  try {
+    raw = readEntry(file, 'fabric.mod.json');
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+
+  let meta;
+  try {
+    meta = JSON.parse(raw.toString('utf8'));
+  } catch {
+    // A jar we cannot read is not a jar we should reason about. Leave it be.
+    return null;
+  }
+
+  const provides = [meta.id, ...(Array.isArray(meta.provides) ? meta.provides : [])].filter(Boolean);
+  const depends = meta.depends && typeof meta.depends === 'object' ? Object.keys(meta.depends) : [];
+  return { provides, depends };
+}
+
+/**
+ * Requirements the installed set does not satisfy.
+ *
+ * Returns one entry per unmet dependency: which jar wants it, and what it
+ * wants. Anything the loader or the game provides is not a requirement.
+ */
+function unmetRequirements(readEntry, files) {
+  const provided = new Set(BUILT_IN);
+  const wants = [];
+
+  for (const file of files) {
+    const meta = readJarMetadata(readEntry, file);
+    if (!meta) continue;
+    for (const id of meta.provides) provided.add(id);
+    for (const id of meta.depends) wants.push({ file, id });
+  }
+
+  return wants.filter((w) => !provided.has(w.id));
+}
+
+/**
+ * The Modrinth project that would supply a missing id.
+ *
+ * Fabric API ships as one project that provides several dozen module ids, so
+ * every unmet `fabric-*` id points at the same place. Anything else is not
+ * guessable from the id alone, and guessing wrong installs a stranger's mod.
+ */
+function projectSupplying(id) {
+  if (id === 'fabric' || id === 'fabric-api' || id.startsWith('fabric-')) return 'fabric-api';
+  return null;
 }
 
 // --------------------------------------------------------------------------
@@ -192,7 +279,7 @@ function readManifest(store) {
  * Returns a summary rather than logging directly, so the caller decides what
  * reaches the journal and the tests can assert on the decisions.
  */
-async function syncMods({ specs, minecraft, store, http, sha1, log = () => {} }) {
+async function syncMods({ specs, minecraft, store, http, sha1, readJarEntry = null, log = () => {} }) {
   const previous = readManifest(store);
   const versionChanged = previous.minecraft !== null && previous.minecraft !== minecraft;
   if (versionChanged) {
@@ -202,6 +289,66 @@ async function syncMods({ specs, minecraft, store, http, sha1, log = () => {} })
   const installed = [];
   const failed = [];
   const removed = [];
+  const dependencies = [];
+
+  // Project ids already accounted for, so a requirement two mods share is
+  // resolved once and a requirement the operator listed themselves is not
+  // fetched a second time under a different name.
+  const satisfied = new Set();
+  const queue = [];
+
+  /**
+   * Put one resolved build on disk, if it is not already there and correct.
+   *
+   * Shared by the configured mods and by the requirements pulled in below, so
+   * a dependency gets the same checksum verification and the same treatment of
+   * a jar that is already present.
+   */
+  async function place(resolved, requiredBy) {
+    if (installed.some((m) => m.file === resolved.file)) {
+      log(`${resolved.spec}: already installed this run as ${resolved.file}`);
+      return;
+    }
+
+    const entry = { spec: resolved.spec, file: resolved.file, sha1: resolved.sha1 };
+    if (requiredBy) entry.requiredBy = requiredBy;
+
+    // A jar is only current if the manifest agrees it is the one we resolved
+    // AND the bytes on disk still hash to that. Checking the bookkeeping alone
+    // would leave a truncated or corrupted jar in place forever, and Fabric
+    // does not skip a bad jar -- it refuses to start. Hashing a few megabytes
+    // per boot is a rounding error against that.
+    const existing = previous.mods.find((m) => m.file === resolved.file);
+    if (existing && store.has(resolved.file) && existing.sha1 === resolved.sha1) {
+      // A direct URL has no published hash, so there is nothing to check
+      // against; the file is taken on trust.
+      if (!resolved.sha1 || sha1(store.read(resolved.file)) === resolved.sha1) {
+        installed.push(entry);
+        return;
+      }
+      log(`${resolved.file} no longer matches its checksum; downloading it again`);
+    }
+
+    try {
+      const body = await http.getBinary(resolved.url);
+      if (resolved.sha1) {
+        const actual = sha1(body);
+        if (actual !== resolved.sha1) {
+          throw new Error(`checksum mismatch (expected ${resolved.sha1}, got ${actual})`);
+        }
+      }
+      store.write(resolved.file, body);
+      installed.push(entry);
+      log(
+        requiredBy
+          ? `installed ${resolved.title} as ${resolved.file} (required by ${requiredBy})`
+          : `installed ${resolved.title} as ${resolved.file}`
+      );
+    } catch (err) {
+      failed.push({ spec: resolved.spec, error: `download failed: ${err.message}` });
+      log(`${resolved.spec}: download failed: ${err.message}`);
+    }
+  }
 
   for (const raw of specs) {
     let parsed;
@@ -232,43 +379,88 @@ async function syncMods({ specs, minecraft, store, http, sha1, log = () => {} })
       continue;
     }
 
-    // Two entries can land on the same build -- the same slug listed twice, or
-    // a slug and a pin that name the same version. Resolve both, install once.
-    if (installed.some((m) => m.file === resolved.file)) {
-      log(`${resolved.spec}: already installed this run as ${resolved.file}`);
+    if (resolved.projectId) satisfied.add(resolved.projectId);
+    for (const id of resolved.requires || []) {
+      queue.push({ projectId: id, requiredBy: resolved.spec });
+    }
+    await place(resolved, null);
+  }
+
+  // Requirements. Modrinth records what each build cannot run without, and a
+  // missing one does not degrade the server -- it stops it booting, the same
+  // way a version-mismatched jar does. Adding `spark` to server_mods without
+  // Fabric API is a crash loop, so the requirements come too, and are named in
+  // the summary rather than appearing from nowhere.
+  //
+  // Bounded by the seen set, and again by a hard ceiling, because the graph is
+  // somebody else's data.
+  let budget = 32;
+  while (queue.length > 0 && budget-- > 0) {
+    const { projectId, requiredBy } = queue.shift();
+    if (satisfied.has(projectId)) continue;
+    satisfied.add(projectId);
+
+    let resolved;
+    try {
+      // A project id works wherever a slug does in Modrinth's API.
+      resolved = await resolveSpec({ kind: 'project', slug: projectId, pin: null, spec: projectId }, {
+        minecraft,
+        http,
+      });
+    } catch (err) {
+      failed.push({ spec: projectId, error: `required by ${requiredBy}: ${err.message}` });
+      log(`${requiredBy} requires ${projectId}, which could not be resolved: ${err.message}`);
       continue;
     }
 
-    // A jar is only current if the manifest agrees it is the one we resolved
-    // AND the bytes on disk still hash to that. Checking the bookkeeping alone
-    // would leave a truncated or corrupted jar in place forever, and Fabric
-    // does not skip a bad jar -- it refuses to start. Hashing a few megabytes
-    // per boot is a rounding error against that.
-    const existing = previous.mods.find((m) => m.file === resolved.file);
-    if (existing && store.has(resolved.file) && existing.sha1 === resolved.sha1) {
-      // A direct URL has no published hash, so there is nothing to check
-      // against; the file is taken on trust.
-      if (!resolved.sha1 || sha1(store.read(resolved.file)) === resolved.sha1) {
-        installed.push({ spec: resolved.spec, file: resolved.file, sha1: resolved.sha1 });
-        continue;
-      }
-      log(`${resolved.file} no longer matches its checksum; downloading it again`);
+    for (const id of resolved.requires || []) {
+      queue.push({ projectId: id, requiredBy: resolved.spec });
     }
+    dependencies.push({ spec: resolved.spec, file: resolved.file, requiredBy });
+    await place(resolved, requiredBy);
+  }
 
-    try {
-      const body = await http.getBinary(resolved.url);
-      if (resolved.sha1) {
-        const actual = sha1(body);
-        if (actual !== resolved.sha1) {
-          throw new Error(`checksum mismatch (expected ${resolved.sha1}, got ${actual})`);
+  // Modrinth's metadata is optimistic. Ask the jars themselves what they need,
+  // and fetch whatever the installed set does not supply -- this is the pass
+  // that catches spark needing Fabric API, which Modrinth does not mention at
+  // all. Skipped when there is no way to read inside a jar.
+  if (readJarEntry) {
+    let rounds = 3;
+    while (rounds-- > 0) {
+      const unmet = unmetRequirements(readJarEntry, installed.map((m) => m.file));
+      if (unmet.length === 0) break;
+
+      const projects = new Map();
+      for (const want of unmet) {
+        const project = projectSupplying(want.id);
+        if (!project) {
+          failed.push({ spec: want.file, error: `needs ${want.id}, which nothing here provides` });
+          log(`${want.file} needs ${want.id}; no project known to supply it`);
+          continue;
         }
+        if (!projects.has(project)) projects.set(project, want.file);
       }
-      store.write(resolved.file, body);
-      installed.push({ spec: resolved.spec, file: resolved.file, sha1: resolved.sha1 });
-      log(`installed ${resolved.title} as ${resolved.file}`);
-    } catch (err) {
-      failed.push({ spec: resolved.spec, error: `download failed: ${err.message}` });
-      log(`${resolved.spec}: download failed: ${err.message}`);
+
+      let added = false;
+      for (const [project, requiredBy] of projects) {
+        if (satisfied.has(project)) continue;
+        satisfied.add(project);
+        let resolved;
+        try {
+          resolved = await resolveSpec({ kind: 'project', slug: project, pin: null, spec: project }, {
+            minecraft,
+            http,
+          });
+        } catch (err) {
+          failed.push({ spec: project, error: `required by ${requiredBy}: ${err.message}` });
+          log(`${requiredBy} needs ${project}, which could not be resolved: ${err.message}`);
+          continue;
+        }
+        dependencies.push({ spec: resolved.spec, file: resolved.file, requiredBy });
+        await place(resolved, requiredBy);
+        added = true;
+      }
+      if (!added) break;
     }
   }
 
@@ -288,7 +480,7 @@ async function syncMods({ specs, minecraft, store, http, sha1, log = () => {} })
     `${JSON.stringify({ version: MANIFEST_VERSION, minecraft, mods: installed }, null, 2)}\n`
   );
 
-  return { installed, failed, removed, minecraft };
+  return { installed, failed, removed, dependencies, minecraft };
 }
 
 // --------------------------------------------------------------------------
@@ -462,7 +654,21 @@ async function main() {
     http,
   });
 
-  const result = await syncMods({ specs, minecraft, store, http, sha1, log });
+  // Reading one file out of a jar. unzip is installed on the instance and a
+  // zip reader is not worth writing; a missing entry or an unreadable jar is a
+  // null, not a failure.
+  const readJarEntry = (file, entry) => {
+    try {
+      return execFileSync('unzip', ['-p', path.join(modsDir, file), entry], {
+        maxBuffer: 8 * 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+    } catch {
+      return null;
+    }
+  };
+
+  const result = await syncMods({ specs, minecraft, store, http, sha1, readJarEntry, log });
 
   // The server runs as MC_USER and Fabric only reads these, but a root-owned
   // jar in a directory the operator edits by hand is a trap.
@@ -482,7 +688,41 @@ async function main() {
     `${result.installed.length} installed, ${result.removed.length} removed, ` +
       `${result.failed.length} failed (Minecraft ${minecraft})`
   );
+
+  // Requirements arrive without being asked for, so say whose they are. Left
+  // unexplained, an operator who listed three mods and finds five jars has to
+  // go digging to find out whether something is wrong.
+  for (const dep of result.dependencies || []) {
+    log(`${dep.spec} was added because ${dep.requiredBy} requires it`);
+  }
+
   for (const failure of result.failed) log(`WARNING: ${failure.spec}: ${failure.error}`);
+
+  // Say it in Discord as well, when the shape of the directory changed in a
+  // way somebody did not ask for. Terraform cannot warn about this at plan
+  // time -- it has no idea what a mod requires until the jar is on the box --
+  // and the journal is not somewhere anyone looks unprompted. A clean sync
+  // stays silent; these two cases do not.
+  const notable = [];
+  for (const dep of result.dependencies || []) {
+    notable.push(`- ${dep.spec} was installed because ${dep.requiredBy} requires it`);
+  }
+  for (const failure of result.failed) {
+    notable.push(`- ${failure.spec} was not installed: ${failure.error}`);
+  }
+
+  if (notable.length > 0) {
+    try {
+      execFileSync(
+        process.env.NOTIFY_SCRIPT || '/opt/minecraft/bin/notify.sh',
+        [`Mods changed on this boot:\n${notable.join('\n')}`],
+        { timeout: 15000, stdio: 'ignore' }
+      );
+    } catch (err) {
+      // Never worth failing a boot over. It is already in the journal.
+      log(`could not post the mod summary: ${err.message}`);
+    }
+  }
 }
 
 if (require.main === module) {
@@ -504,5 +744,8 @@ module.exports = {
   resolveMinecraftVersion,
   readManifest,
   directoryStore,
+  readJarMetadata,
+  unmetRequirements,
+  projectSupplying,
   MANIFEST,
 };

@@ -328,13 +328,23 @@ server_mods = ["lithium", "ferrite-core", "krypton", "spark"]
 terraform apply                 # publishes the list
 ```
 
-then `/stop` and `/start` in Discord. To apply it without waiting for a boot:
+then `/stop` and `/start` in Discord. To apply it without waiting for a boot,
+restart the service -- that alone is enough:
 
 ```bash
-sudo mc mods sync               # download and prune now
 sudo systemctl restart minecraft
 sudo mc mods                    # what is installed, and which entries are managed
 ```
+
+Restarting pulls in `minecraft-refresh.service`, which fetches the new list from
+SSM, and the sync then runs against it before the server starts.
+
+**Do not reach for `sudo mc mods sync` straight after an apply.** It reconciles
+against the configuration already on the instance, and a fresh `terraform apply`
+has not reached it yet -- so it syncs the *previous* list, and `mc mods` then
+reports that previous list back to you as though it were current. It is the
+right command only once the instance has the configuration you mean, which is
+what the restart above arranges.
 
 Fabric reads the mods directory once, at launch, so a sync always needs a
 restart to take effect. Failures never block the server from starting; they are
@@ -501,7 +511,7 @@ Guards against a runaway bill, in order of usefulness:
 
 - `idle_timeout_minutes` — the main one, and the only one that runs by default
 - `shutdown_on_crash = true` (the default) — a crash loop cannot idle for hours
-- `uptime_warning_enabled` — posts to Discord when a session has been running
+- `uptime_warning_enabled` (on by default) — posts to Discord when a session has been running
   for `uptime_warning_hours`, and again every interval after that. It ends
   nothing, which is what makes it safe to turn on: the idle timeout only ever
   fires on an *empty* server, so this is what covers the case it cannot — one
@@ -527,5 +537,22 @@ backup and copy it somewhere else first:
 aws s3 cp s3://<bucket>/backups/<newest>.tar.gz ./
 ```
 
-The bucket refuses to be deleted while it still holds backups unless you set
-`force_destroy_buckets = true`, which is deliberate.
+The bucket refuses to be deleted while it still holds backups. That is
+deliberate, and it takes one more step than it looks: `force_destroy` is read
+from what Terraform already has recorded for the bucket, not from the variables
+you pass to the destroy. So setting `force_destroy_buckets = true` and going
+straight to `destroy` still fails:
+
+```
+Error: deleting S3 Bucket (...): api error BucketNotEmpty
+```
+
+Everything else is destroyed by then; only the bucket is left. Empty it and run
+the destroy again:
+
+```bash
+aws s3 rm s3://<bucket>/ --recursive
+terraform -chdir=terraform destroy
+```
+
+Applying `force_destroy_buckets = true` first, before the destroy, works too.

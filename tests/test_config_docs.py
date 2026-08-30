@@ -99,3 +99,49 @@ class ParsingVariablesTf(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BlockBoundaryTestCase(unittest.TestCase):
+    """read_blocks() finds the end of a variable by counting braces.
+
+    Quantifier braces inside a validation regex are the case that makes that
+    fragile, and two variables here already use them. If the count is thrown
+    off, the block ends early and the reference quietly loses whatever came
+    after -- including the next variable.
+    """
+
+    SOURCE = """
+variable "example" {
+  description = "A thing."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = can(regex("^[a-z]{1,64}$", var.example))
+    error_message = "must be short and lowercase."
+  }
+}
+
+variable "after" {
+  description = "The one that would go missing."
+  type        = string
+  default     = ""
+}
+"""
+
+    def test_quantifier_braces_do_not_truncate_the_block(self):
+        blocks = list(gen.read_blocks(self.SOURCE))
+        self.assertEqual([name for _s, name, _b in blocks], ["example", "after"])
+
+    def test_the_whole_block_is_captured(self):
+        body = next(b for _s, name, b in gen.read_blocks(self.SOURCE) if name == "example")
+        self.assertIn("error_message", body)
+        self.assertIn("must be short and lowercase.", body)
+
+    def test_the_variables_in_this_repo_all_survive_the_parse(self):
+        # The real file, which is what actually has to keep working.
+        with open(gen.VARIABLES, encoding="utf-8") as handle:
+            source = handle.read()
+        declared = sum(1 for line in source.splitlines() if line.startswith('variable "'))
+        found = len(list(gen.read_blocks(source)))
+        self.assertEqual(found, declared, "a variable was lost while parsing")
