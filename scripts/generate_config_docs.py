@@ -60,12 +60,17 @@ SSM parameter which the instance re-reads on every boot, so `terraform apply`
 followed by `/stop` and `/start` in Discord applies the change. The exceptions
 are called out on the settings they apply to.
 
+**[Applying changes](applying-changes.md) lists every exception in one place** —
+which settings apply without a restart, which are only read while the server is
+being created, and how to change one of those on a server that already exists.
+
 Related, with more context than a reference entry can carry:
 
 - [What it costs](../README.md#what-it-costs) — which settings are free-tier bound
 - [Route 53 setup](route53-setup.md) — the `route53_*` and `addressing_mode` settings
 - [Mods](mods.md) — `server_mods`, and tuning the server for more players
-- [Operations](operations.md) — applying changes, backups, upgrades
+- [Applying changes](applying-changes.md) — what each setting needs before it takes effect
+- [Operations](operations.md) — shells, backups, restores, upgrades
 """
 
 

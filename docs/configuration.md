@@ -21,12 +21,17 @@ SSM parameter which the instance re-reads on every boot, so `terraform apply`
 followed by `/stop` and `/start` in Discord applies the change. The exceptions
 are called out on the settings they apply to.
 
+**[Applying changes](applying-changes.md) lists every exception in one place** —
+which settings apply without a restart, which are only read while the server is
+being created, and how to change one of those on a server that already exists.
+
 Related, with more context than a reference entry can carry:
 
 - [What it costs](../README.md#what-it-costs) — which settings are free-tier bound
 - [Route 53 setup](route53-setup.md) — the `route53_*` and `addressing_mode` settings
 - [Mods](mods.md) — `server_mods`, and tuning the server for more players
-- [Operations](operations.md) — applying changes, backups, upgrades
+- [Applying changes](applying-changes.md) — what each setting needs before it takes effect
+- [Operations](operations.md) — shells, backups, restores, upgrades
 
 
 ## Index
@@ -94,6 +99,7 @@ Related, with more context than a reference entry can carry:
 | [`uptime_warning_enabled`](#uptime_warning_enabled) | `bool` | `false` | Whether to post a Discord message when a session has been running a long time. |
 | [`uptime_warning_hours`](#uptime_warning_hours) | `number` | `6` | Hours between long-session warnings, when uptime_warning_enabled is true. |
 | [`shutdown_on_crash`](#shutdown_on_crash) | `bool` | `true` | Power the instance off if the server exits unexpectedly, so a crash cannot quietly bill for hours. |
+| [`manage_server_properties`](#manage_server_properties) | `bool` | `false` | Whether Terraform owns the server.properties settings, or only seeds them. |
 | [`server_motd`](#server_motd) | `string` | `"An on-demand Minecraft server"` | Message shown in the multiplayer server list. |
 | [`server_difficulty`](#server_difficulty) | `string` | `"normal"` | peaceful, easy, normal or hard. |
 | [`server_gamemode`](#server_gamemode) | `string` | `"survival"` | survival, creative, adventure or spectator. |
@@ -171,11 +177,11 @@ Rough guide: t4g.small (2 GB) for 2-3 players on a light world,
 t4g.medium (4 GB) for up to about 8, t4g.large (8 GB) for a modpack.
 Anything above t4g.small is billed at the normal on-demand rate.
 
-Changing size within a family is applied in place. Changing architecture
-(t4g -> t3) on a deployment that already exists needs
-`terraform apply -replace=aws_instance.server`, because the AMI is pinned
-after the first boot and the old one would not boot on the new CPU. The
-world is on its own volume either way.
+Changing size within a family is applied in place: AWS stops the instance,
+resizes it and starts it again. Changing architecture (t4g -> t3) replaces
+the instance instead, which Terraform plans on its own -- the replacement
+picks up the AMI for the new architecture, so no -replace flag is needed.
+The world is on its own volume either way; only the root volume is lost.
 
 ### `root_volume_gb`
 
@@ -535,6 +541,31 @@ when the server does. Ignored entirely when uptime_warning_enabled is false.
 `bool` · default `true`
 
 Power the instance off if the server exits unexpectedly, so a crash cannot quietly bill for hours. Turn off while debugging.
+
+### `manage_server_properties`
+
+`bool` · default `false`
+
+Whether Terraform owns the server.properties settings, or only seeds them.
+
+  false - the default and the original behaviour. server.properties is
+          written once, on the first boot, and never touched again. Changing
+          server_motd or server_difficulty later does nothing; you edit the
+          file on the instance instead. Hand edits are safe forever.
+  true  - the settings below are reconciled into server.properties on every
+          boot, so changing one is `terraform apply` and a restart, like
+          every other setting. Hand edits to those keys are overwritten.
+
+Only the keys this project sets are touched -- server-port, motd, difficulty,
+gamemode, max-players, view-distance, simulation-distance, white-list,
+enforce-whitelist and online-mode. Anything else in the file, including keys
+a mod reads, is left exactly as it is, and the previous file is kept beside
+it as server.properties.bak.
+
+Turn this on if you would rather manage the server from terraform.tfvars
+than from a shell on the instance. Leave it off if you tune the server in
+place, or if you use in-game commands like /difficulty that write back to
+the file -- with this on, the next restart would undo them.
 
 ### `server_motd`
 

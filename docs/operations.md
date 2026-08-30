@@ -155,15 +155,21 @@ The change is live. The same path carries script changes: anything you edit
 under `server/` is re-zipped, uploaded and picked up on the next boot, or
 immediately with `sudo mc update && sudo systemctl restart minecraft`.
 
-Two settings are exceptions and need an instance rebuild, because they are baked
-in at first boot: `instance_type` (Terraform handles the replacement itself) and
-anything already written into `server.properties`, which is only created when
-absent. To change the latter, edit `/srv/minecraft/server/server.properties`
-directly, or delete it and restart to have it regenerated from the Terraform
-values.
+A handful of settings are exceptions, because they are only read while the
+server is being created. The commonest is anything already written into
+`server.properties`, which is created when absent and never rewritten: set
+`manage_server_properties = true` to have those keys reconciled on every boot
+instead, or edit `/srv/minecraft/server/server.properties` directly, or delete
+it and restart to regenerate it from the Terraform values. `server_ops` and
+`server_whitelist_players` are the same shape — they seed `ops.json` and
+`whitelist.json` only while those files do not exist — but there the in-game
+`/op` and `/whitelist` are the intended way to change them, and need no shell.
 
-For what else can be edited on the instance directly, and what gets reverted the
-next time it starts, see [making changes by hand](#making-changes-by-hand).
+**[Applying changes](applying-changes.md) lists what every setting needs** —
+which apply without a restart, which only count on the first boot and what to do
+about them, and the two that rebuild the instance. For what can be edited on the
+instance directly, and what gets reverted the next time it starts, see
+[making changes by hand](#making-changes-by-hand).
 
 ## Making changes by hand
 
@@ -232,8 +238,11 @@ job. Stopping an EC2 instance keeps both volumes.
 
 **Across an instance replacement:** only `/srv/minecraft`. The root volume is
 built fresh from the AMI and `bootstrap.sh`, so root-volume changes are gone.
-Terraform replaces the instance when `instance_type` changes, and if you ever
-taint or `-replace` it. `terraform destroy` takes the data volume too.
+Two settings cause one: `ssh_key_name`, because EC2 cannot change a key pair on
+an existing instance, and `instance_type` *when it crosses architectures* —
+`t4g` is arm64, `t3` is x86_64. A resize within one architecture is an in-place
+update instead, and keeps the root volume. A `taint` or `-replace` rebuilds it
+too, and `terraform destroy` takes the data volume with it.
 
 If a root-volume change needs to outlive a replacement, it has to be in the
 repo — a script under `server/bin/` invoked from a systemd unit, or a step in
@@ -438,8 +447,10 @@ the file exists it is never touched again.
 
 That means:
 
-- Adding `server_ops` after the first deploy still works -- the file did not
-  exist, so the next boot creates it. This is not bootstrap-only.
+- Adding `server_ops` after the first deploy works **as long as `ops.json` does
+  not exist yet** -- the next boot creates it. That is why the seeding runs on
+  every boot rather than only in `bootstrap.sh`. Once anyone has been opped in
+  game the file exists and the value is ignored.
 - An `/op` granted in game at 2am survives every later restart. Terraform will
   not quietly revoke it.
 - Changing the Terraform value after the file exists does **nothing**. Use the

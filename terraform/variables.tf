@@ -57,11 +57,11 @@ variable "instance_type" {
     t4g.medium (4 GB) for up to about 8, t4g.large (8 GB) for a modpack.
     Anything above t4g.small is billed at the normal on-demand rate.
 
-    Changing size within a family is applied in place. Changing architecture
-    (t4g -> t3) on a deployment that already exists needs
-    `terraform apply -replace=aws_instance.server`, because the AMI is pinned
-    after the first boot and the old one would not boot on the new CPU. The
-    world is on its own volume either way.
+    Changing size within a family is applied in place: AWS stops the instance,
+    resizes it and starts it again. Changing architecture (t4g -> t3) replaces
+    the instance instead, which Terraform plans on its own -- the replacement
+    picks up the AMI for the new architecture, so no -replace flag is needed.
+    The world is on its own volume either way; only the root volume is lost.
   EOT
   type        = string
   default     = "t4g.small"
@@ -493,6 +493,33 @@ variable "shutdown_on_crash" {
   description = "Power the instance off if the server exits unexpectedly, so a crash cannot quietly bill for hours. Turn off while debugging."
   type        = bool
   default     = true
+}
+
+variable "manage_server_properties" {
+  description = <<-EOT
+    Whether Terraform owns the server.properties settings, or only seeds them.
+
+      false - the default and the original behaviour. server.properties is
+              written once, on the first boot, and never touched again. Changing
+              server_motd or server_difficulty later does nothing; you edit the
+              file on the instance instead. Hand edits are safe forever.
+      true  - the settings below are reconciled into server.properties on every
+              boot, so changing one is `terraform apply` and a restart, like
+              every other setting. Hand edits to those keys are overwritten.
+
+    Only the keys this project sets are touched -- server-port, motd, difficulty,
+    gamemode, max-players, view-distance, simulation-distance, white-list,
+    enforce-whitelist and online-mode. Anything else in the file, including keys
+    a mod reads, is left exactly as it is, and the previous file is kept beside
+    it as server.properties.bak.
+
+    Turn this on if you would rather manage the server from terraform.tfvars
+    than from a shell on the instance. Leave it off if you tune the server in
+    place, or if you use in-game commands like /difficulty that write back to
+    the file -- with this on, the next restart would undo them.
+  EOT
+  type        = bool
+  default     = false
 }
 
 variable "server_motd" {

@@ -634,6 +634,90 @@ assert_contains "$(cat "$STUB_LOG")" "shutdown -h +30" "same half hour window"
 teardown
 
 # ==========================================================================
+# apply-properties.sh: making the server_* settings apply like everything else
+# ==========================================================================
+
+seed_props() { # seed_props [extra lines...]
+  mkdir -p "$SERVER_DIR"
+  {
+    echo "# a comment somebody added"
+    echo "motd=the old motd"
+    echo "difficulty=peaceful"
+    echo "max-players=3"
+    echo ""
+    echo "spawn-protection=0"
+    for extra in "$@"; do printf '%s\n' "$extra"; done
+  } > "$SERVER_DIR/server.properties"
+}
+
+setup "server.properties is left alone unless asked for"
+seed_props
+run_script apply-properties.sh
+assert_contains "$(cat "$SERVER_DIR/server.properties")" "motd=the old motd" "the default must not rewrite hand edits"
+assert_no_file "$SERVER_DIR/server.properties.bak" "and must not take a backup it did not need"
+teardown
+
+setup "managed keys are reconciled when asked for" \
+  'MANAGE_SERVER_PROPERTIES="true"' 'SERVER_MOTD="a new motd"' 'SERVER_DIFFICULTY="hard"' \
+  'SERVER_MAX_PLAYERS="12"'
+seed_props
+run_script apply-properties.sh
+props=$(cat "$SERVER_DIR/server.properties")
+assert_contains "$props" "motd=a new motd"       "the configured value should win"
+assert_contains "$props" "difficulty=hard"       "and for every managed key"
+assert_contains "$props" "max-players=12"        "including numbers"
+assert_not_contains "$props" "the old motd"      "the old value must be gone"
+teardown
+
+setup "unmanaged keys, comments and blank lines survive" \
+  'MANAGE_SERVER_PROPERTIES="true"' 'SERVER_MOTD="x"'
+seed_props "some-mod-setting=leave me alone" "level-seed=12345"
+run_script apply-properties.sh
+props=$(cat "$SERVER_DIR/server.properties")
+assert_contains "$props" "# a comment somebody added" "comments are not ours to remove"
+assert_contains "$props" "some-mod-setting=leave me alone" "a key we do not own must be untouched"
+assert_contains "$props" "level-seed=12345" "the world seed especially"
+assert_contains "$props" "spawn-protection=0" "and anything bootstrap wrote but does not manage"
+teardown
+
+setup "a managed key the file never had is added" \
+  'MANAGE_SERVER_PROPERTIES="true"' 'SERVER_ONLINE_MODE="false"'
+seed_props
+run_script apply-properties.sh
+assert_contains "$(cat "$SERVER_DIR/server.properties")" "online-mode=false" "a new managed key should appear"
+teardown
+
+setup "a value that already matches is not rewritten" \
+  'MANAGE_SERVER_PROPERTIES="true"'
+seed_props
+run_script apply-properties.sh
+run_script apply-properties.sh
+assert_contains "$OUT" "already matches" "the second run should be a no-op"
+teardown
+
+setup "the previous file is kept when something changes" \
+  'MANAGE_SERVER_PROPERTIES="true"' 'SERVER_MOTD="replaced"'
+seed_props
+run_script apply-properties.sh
+assert_file "$SERVER_DIR/server.properties.bak" "overwriting hand edits without a copy would be unkind"
+assert_contains "$(cat "$SERVER_DIR/server.properties.bak")" "the old motd" "the copy should be the previous contents"
+teardown
+
+setup "awkward characters in a value survive the round trip" \
+  'MANAGE_SERVER_PROPERTIES="true"' 'SERVER_MOTD="Bob&Alice: 100% $HOME \ done"'
+seed_props
+run_script apply-properties.sh
+assert_contains "$(cat "$SERVER_DIR/server.properties")" 'motd=Bob&Alice: 100% $HOME \ done' "no shell or sed interpretation"
+teardown
+
+setup "a missing server.properties is not an error" 'MANAGE_SERVER_PROPERTIES="true"'
+mkdir -p "$SERVER_DIR"
+run_script apply-properties.sh
+assert_eq "0" "$RC" "the first boot writes it; this must not fail the start"
+assert_contains "$OUT" "nothing to reconcile" "and should say why"
+teardown
+
+# ==========================================================================
 # request-stop.sh
 # ==========================================================================
 

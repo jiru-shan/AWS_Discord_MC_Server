@@ -167,6 +167,7 @@ locals {
     STOP_BACKUP_TIMEOUT_SECONDS = "180"
 
     SERVER_PORT                = tostring(var.server_port)
+    MANAGE_SERVER_PROPERTIES   = tostring(var.manage_server_properties)
     SERVER_MOTD                = var.server_motd
     SERVER_DIFFICULTY          = var.server_difficulty
     SERVER_GAMEMODE            = var.server_gamemode

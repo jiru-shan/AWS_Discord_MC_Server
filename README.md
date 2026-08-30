@@ -67,7 +67,35 @@ cp terraform.tfvars.example terraform.tfvars
 Edit `terraform.tfvars`. The two required values are `discord_public_key` and
 `accept_minecraft_eula`. Everything else has a working default.
 
+> [!IMPORTANT]
+> **Set the first-boot settings now.** A few are read only while the server is
+> being created. Changing them afterwards does nothing until you either turn on
+> `manage_server_properties` or change the thing itself on the instance.
+
+| Set before the first apply | Why |
+| --- | --- |
+| `server_ops`, `server_whitelist_players` | Seed `ops.json` and `whitelist.json`, and only while those files do not exist. Once they do, the in-game `/op` and `/whitelist` own them |
+| `server_motd`, `server_difficulty`, `server_gamemode`, `server_max_players`, `server_view_distance`, `server_simulation_distance`, `server_online_mode`, `server_whitelist` | Written into `server.properties` on the first boot and never rewritten |
+| `server_port` | The same, and it also moves the firewall rule and the address `/address` reports — so changing it later needs both an apply and a file edit |
+| `java_package`, `restore_from_s3` | Used once, while the instance is being built |
+
+Setting `manage_server_properties = true` takes the two `server.properties` rows
+off that list: those settings are then reconciled on every boot and apply like
+anything else. The cost is that hand edits to them, and in-game commands like
+`/difficulty`, are overwritten at the next restart. It is off by default because
+the opposite is the safer surprise.
+
+Everything else is re-read on every boot — `server_mods`, `minecraft_version`,
+the idle timeout and every notification setting included — so those can change
+whenever. [Applying changes](docs/applying-changes.md) lists what each setting
+needs, and how to change a first-boot one after the fact.
+
 **3. Deploy.**
+
+> [!WARNING]
+> This creates the server, and the first boot is what bakes in the settings in
+> the table above. Go back and set them now if you have not — afterwards they
+> need [a different route](docs/applying-changes.md#first-boot-only--a-live-instance-needs-more).
 
 ```bash
 terraform init
@@ -280,6 +308,10 @@ configuration to SSM Parameter Store, and the instance re-reads it on every
 boot. Run `terraform apply`, then `/stop` and `/start`, and the change is live.
 The same is true of the scripts under `server/`.
 
+Not every setting works that way. **[Applying changes](docs/applying-changes.md)
+lists what each one needs** — the settings that apply without a restart, the
+ones that only count on the first boot, and the two that rebuild the instance.
+
 ### Getting the configuration reference
 
 [docs/configuration.md](docs/configuration.md) is checked in, so reading it on
@@ -461,6 +493,7 @@ sudo mc status
 | [Route 53 setup](docs/route53-setup.md) | Running on `mc.example.com` instead of an IP: hosted zones, delegation, TTLs, costs. |
 | [Notifications](docs/notifications.md) | Getting "Server is up", crashes, joins and leaves, and long-session warnings posted to a channel. Optional, one minute to set up. |
 | [Mods](docs/mods.md) | Adding mods, what players need, mod and server configuration, tuning for more players. |
+| [Applying changes](docs/applying-changes.md) | What each setting needs before it takes effect: the usual apply-and-restart, and the settings that do not work that way. |
 | [Operations](docs/operations.md) | Day to day: shells, backups, restores, applying changes, editing things by hand, Minecraft upgrades, watching costs. |
 | [Architecture](docs/architecture.md) | How the pieces fit and why they are arranged this way. |
 | [Troubleshooting](docs/troubleshooting.md) | Symptom-first, from "Discord will not accept the endpoint" to "the instance stays running forever". |

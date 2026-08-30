@@ -21,6 +21,10 @@ ExecStartPre=/opt/minecraft/bin/announce-address.sh
 # Seed ops.json / whitelist.json if they do not exist yet. Never overwrites,
 # so in-game /op and /whitelist changes always win.
 ExecStartPre=-/opt/minecraft/bin/seed-players.sh
+# Only does anything when manage_server_properties is true. Off by default: the
+# file is written once and hand edits are meant to survive. Turning it on makes
+# the server_* settings apply like everything else, at the cost of those edits.
+ExecStartPre=-/opt/minecraft/bin/apply-properties.sh
 # Raising data_volume_gb grows the EBS volume but not the filesystem on it, so
 # the extra space would be invisible and the disk would fill anyway. xfs_growfs
 # only ever grows, and does nothing when there is nothing to do.
