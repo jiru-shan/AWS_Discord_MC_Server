@@ -134,8 +134,10 @@ The normal path. Everything here is read from SSM on each boot.
 `server_jar_url` · `server_mods` · `local_backup_keep` · `addressing_mode` ·
 `route53_zone_id` · `route53_record_name` · `manage_server_properties`
 
-With `manage_server_properties = true`, every `server_*` setting in the next
-section joins this list as well.
+With `manage_server_properties = true`, the `server.properties` group in the
+next section joins this list too — `server_motd` through `server_port`. The
+player lists do not: `server_ops` and `server_whitelist_players` stay with the
+in-game commands, which is where they belong.
 
 ### First boot only — a live instance needs more
 

@@ -14,7 +14,7 @@ whole cost model rests on that last step working.
 | ----------------- | ---------------------------------------------------------------- |
 | `terraform/`      | All AWS resources. `terraform apply` provisions the whole stack.  |
 | `lambda/`         | Discord interactions endpoint. Zero dependencies, including a pure-Python Ed25519 verifier (PyNaCl needs a compiled wheel). |
-| `server/bin/`     | Runs on the instance. `servermanager.js` holds the idle-shutdown logic; `update-server-jar.sh`, `install-mods.js` and `seed-players.sh` reconcile the box against config on every boot. |
+| `server/bin/`     | Runs on the instance. `servermanager.js` holds the idle-shutdown logic; `update-server-jar.sh`, `install-mods.js`, `seed-players.sh` and `apply-properties.sh` reconcile the box against config on every boot. |
 | `server/systemd/` | Units that run the server on every boot.                          |
 | `scripts/`        | Discord slash-command registration; the config-docs generator.    |
 | `tests/`          | Four suites: python, two node, bash. `make test` — no dependencies, no AWS. Must pass on Linux, macOS and Git Bash; see below. |
@@ -40,6 +40,15 @@ whole cost model rests on that last step working.
   `on-stop.sh` runs on every service stop and only shuts down when that sentinel
   is present, so maintenance (`systemctl stop minecraft`) never powers the box
   off unexpectedly.
+
+- **`server.properties` is seeded, not owned -- unless asked.** `bootstrap.sh`
+  writes it once and nothing rewrites it, so hand edits and in-game commands
+  survive. `apply-properties.sh` reverses that for the keys Terraform sets, and
+  only when `manage_server_properties` is true. It reconciles the managed subset
+  in place rather than regenerating the file: comments, blank lines, the world
+  seed and any key a mod reads are copied through untouched, and the previous
+  file is kept as `.bak`. Adding a key to the managed list there means adding it
+  to the list `bootstrap.sh` writes too, or the two drift.
 
 - **Mods are reconciled, not installed once.** `install-mods.js` runs as an
   `ExecStartPre` on every boot and makes `mods/` match `server_mods`. Two rules

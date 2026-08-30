@@ -331,7 +331,10 @@ sudo journalctl -u minecraft-refresh
 
 Settings already written into `server.properties` are the exception: that file
 is only generated when absent, so hand edits are never clobbered. Edit it
-directly, or delete it and restart.
+directly, delete it and restart, or set `manage_server_properties = true` to
+have Terraform own those keys from then on —
+[applying changes](applying-changes.md#serverproperties-settings) covers the
+trade.
 
 If `journalctl -u minecraft-refresh` shows nothing at all for this boot, check
 whether the unit was left masked after a debugging session — masking it is the

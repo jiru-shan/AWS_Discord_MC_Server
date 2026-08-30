@@ -203,6 +203,11 @@ only, and never rewritten after that. This is so hand edits on the instance
 survive, but it does mean changing one of these variables later has no effect
 on an existing server.
 
+Set `manage_server_properties = true` to reverse that: the keys below are then
+reconciled on every boot, so changing one is an apply and a restart like any
+other setting — at the cost of the hand edits this default protects. See
+[applying changes](applying-changes.md#serverproperties-settings).
+
 | Variable | Property |
 | --- | --- |
 | `server_motd` | `motd` |

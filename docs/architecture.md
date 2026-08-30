@@ -27,6 +27,7 @@
    │  minecraft.service                                           │
    │    ExecStartPre  announce-address.sh   publish the address   │
    │                  seed-players.sh       ops / whitelist       │
+   │                  apply-properties.sh   server.properties     │
    │                  update-server-jar.sh  match minecraft_version│
    │                  install-mods.js       match server_mods     │
    │    ExecStart     servermanager.js  ──► java -jar server.jar  │
@@ -114,17 +115,23 @@ server starts, by an `ExecStartPre` that compares desired against actual:
 | Script | Reconciles | Skips when |
 | --- | --- | --- |
 | `seed-players.sh` | `ops.json`, `whitelist.json` | the file exists — in-game `/op` owns it from then on |
+| `apply-properties.sh` | the managed keys of `server.properties` | `manage_server_properties` is false, which is the default |
 | `update-server-jar.sh` | the jar against `minecraft_version` | versions already match, or it is `latest` |
 | `install-mods.js` | `mods/` against `server_mods` | each jar is present and its checksum matches |
 
 The order matters: the jar is settled before the mods are resolved, so a mod is
 never resolved against a Minecraft version other than the one about to run.
 
-None of the three may fail the boot. Each is invoked with a `-` prefix and
-returns 0 whatever happens, because every one of them is an improvement to a
-server that would otherwise still work. A missing optimisation is a bad
-evening; a server that will not start is a bad week, on a box whose only way in
-is SSM.
+None of them may fail the boot. Each is invoked with a `-` prefix and returns 0
+whatever happens, because every one of them is an improvement to a server that
+would otherwise still work. A missing optimisation is a bad evening; a server
+that will not start is a bad week, on a box whose only way in is SSM.
+
+`apply-properties.sh` is the one that is off by default, and deliberately so:
+the others reconcile things Terraform is unambiguously the source of truth for,
+while `server.properties` is a file the server itself rewrites and people tune
+by hand. Owning it is opt-in, and opting in means hand edits to the managed keys
+are overwritten on the next boot.
 
 ### A sentinel file decides whether to power off
 

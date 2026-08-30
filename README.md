@@ -436,8 +436,9 @@ terraform/          Everything in AWS. Start at main.tf.
 lambda/             The Discord interactions endpoint.
                     Zero dependencies, including the Ed25519 verifier.
 server/bin/         What runs on the instance. servermanager.js holds the
-                    idle-shutdown logic, install-mods.js the mod sync and
-                    update-server-jar.sh the Minecraft version reconcile.
+                    idle-shutdown logic; install-mods.js, update-server-jar.sh,
+                    seed-players.sh and apply-properties.sh reconcile the box
+                    against the configuration on every boot.
 server/systemd/     The units that run it on every boot.
 scripts/            One-off Discord command registration.
 tests/              Four suites: python, two node, bash. `make test`

@@ -215,7 +215,7 @@ where hand changes belong.
 
 | Path | Why it survives |
 | --- | --- |
-| `/srv/minecraft/server/server.properties` | written only when absent, and only on the first boot |
+| `/srv/minecraft/server/server.properties` | written only when absent — **unless `manage_server_properties = true`**, which reconciles the managed keys on every boot |
 | `/srv/minecraft/server/ops.json`, `whitelist.json` | `seed-players.sh` writes them only when absent, so in-game `/op` wins |
 | `/srv/minecraft/server/world/` and the rest of the world | never touched by anything here |
 | `mods/` jars **not** in `.managed.json` | `install-mods.js` only ever touches jars it installed |
@@ -225,7 +225,8 @@ where hand changes belong.
 So: to add a mod that is not on Modrinth, drop the jar into
 `/srv/minecraft/server/mods/` and leave it out of `server_mods`. To change a
 `server.properties` setting, edit the file. Neither needs anything from
-Terraform, and neither will be undone.
+Terraform, and neither will be undone — the second only while
+`manage_server_properties` stays false, which is the default.
 
 ### Two levels of "survives"
 

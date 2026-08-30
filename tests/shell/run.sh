@@ -710,6 +710,19 @@ run_script apply-properties.sh
 assert_contains "$(cat "$SERVER_DIR/server.properties")" 'motd=Bob&Alice: 100% $HOME \ done' "no shell or sed interpretation"
 teardown
 
+setup "the managed key list does not drift from what bootstrap.sh writes"
+# apply-properties.sh reconciles a subset of server.properties. If bootstrap.sh
+# starts writing a key from a variable and this list does not learn about it,
+# that setting quietly goes back to being first-boot-only with nothing to say so.
+bootstrap_keys=$(sed -n '/cat > "$SERVER_DIR\/server.properties"/,/^PROPS$/p' "$REPO/server/bin/bootstrap.sh" \
+  | grep -E '^[a-z-]+=\$\{SERVER_' | cut -d= -f1 | sort -u)
+managed_keys=$(sed -n '/cat <<PAIRS/,/^PAIRS$/p' "$REPO/server/bin/apply-properties.sh" \
+  | grep -E '^[a-z-]+=' | cut -d= -f1 | sort -u)
+check "bootstrap.sh should write some variable-derived keys" \
+  "$([ -n "$bootstrap_keys" ] && echo 0 || echo 1)" "extraction found nothing"
+assert_eq "$bootstrap_keys" "$managed_keys" "the two lists must stay identical"
+teardown
+
 setup "a missing server.properties is not an error" 'MANAGE_SERVER_PROPERTIES="true"'
 mkdir -p "$SERVER_DIR"
 run_script apply-properties.sh
