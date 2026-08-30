@@ -180,7 +180,7 @@ nowhere, which looks exactly like a broken Lambda.
 ## 9. Register the slash commands
 
 ```bash
-python scripts/register_commands.py --guild <your server ID>
+python3 scripts/register_commands.py --guild <your server ID>
 ```
 
 This is the call that needs all three identifiers at once:
@@ -204,7 +204,7 @@ propagate — use `--guild` while setting up.
 Check what is registered at any time:
 
 ```bash
-python scripts/register_commands.py --list --guild <server ID>
+python3 scripts/register_commands.py --list --guild <server ID>
 ```
 
 ## 10. Try it

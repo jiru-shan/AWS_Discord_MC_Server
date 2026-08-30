@@ -4,6 +4,12 @@
 
 TF := terraform -chdir=terraform
 
+# The interpreter is python3 on Linux and macOS, and python in Git Bash on
+# Windows, which ships no python3. Both names also exist on Windows as App
+# Execution Alias shims that may not run at all, so each candidate is executed
+# rather than merely located. Override with `make PYTHON=/path/to/python`.
+PYTHON ?= $(shell for p in python3 python; do if command -v $$p >/dev/null 2>&1 && $$p -c '' >/dev/null 2>&1; then echo $$p; break; fi; done)
+
 .PHONY: help
 help:
 	@echo "make test        run every test suite"
@@ -12,6 +18,7 @@ help:
 	@echo "make test-mods     the mod installer (node)"
 	@echo "make test-shell    on-instance scripts (bash, stubbed AWS)"
 	@echo "make check       test + terraform validate + shell/node syntax"
+	@echo "make docs        regenerate docs/configuration.md from variables.tf"
 	@echo "make init        terraform init"
 	@echo "make plan        terraform plan"
 	@echo "make apply       terraform apply"
@@ -27,7 +34,7 @@ test: test-lambda test-session test-mods test-shell
 
 .PHONY: test-lambda
 test-lambda:          ## Ed25519 verification and the Discord handler
-	python -m unittest discover -s tests -v
+	$(PYTHON) -m unittest discover -s tests -v
 
 .PHONY: test-session
 test-session:         ## the idle-shutdown state machine
@@ -41,13 +48,18 @@ test-mods:            ## the Fabric mod installer
 test-shell:           ## the on-instance scripts, against stubbed AWS and systemd
 	bash tests/shell/run.sh
 
+.PHONY: docs
+docs:                 ## regenerate the configuration reference from variables.tf
+	$(PYTHON) scripts/generate_config_docs.py
+
 .PHONY: check
 check: test
 	$(TF) fmt -recursive
 	$(TF) validate
 	@for f in server/bin/*.sh server/bin/mc; do bash -n "$$f" || exit 1; done
 	@for f in server/bin/*.js; do node --check "$$f" || exit 1; done
-	@python -m py_compile lambda/*.py scripts/*.py
+	@$(PYTHON) -m py_compile lambda/*.py scripts/*.py
+	@$(PYTHON) scripts/generate_config_docs.py --check
 	@echo "all checks passed"
 
 .PHONY: init
@@ -73,7 +85,7 @@ fmt:
 
 .PHONY: commands
 commands:
-	python scripts/register_commands.py
+	$(PYTHON) scripts/register_commands.py
 
 .PHONY: outputs
 outputs:

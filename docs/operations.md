@@ -476,7 +476,7 @@ set up: [notifications.md](notifications.md).
 
 ```bash
 aws ce get-cost-and-usage \
-  --time-period Start=$(date -u -d '30 days ago' +%Y-%m-%d),End=$(date -u +%Y-%m-%d) \
+  --time-period Start=$(date -u -d '30 days ago' +%F 2>/dev/null || date -u -v-30d +%F),End=$(date -u +%F) \
   --granularity MONTHLY --metrics UnblendedCost \
   --filter '{"Tags":{"Key":"Project","Values":["minecraft"]}}'
 ```

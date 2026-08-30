@@ -99,7 +99,7 @@ and save again.
   `--guild <server ID>` for instant registration.
 - **Bot invited with `applications.commands`?** The `bot` scope alone is not
   enough. Regenerate the OAuth2 URL with both scopes and re-add the bot.
-- **Right server?** `python scripts/register_commands.py --list --guild <id>`
+- **Right server?** `python3 scripts/register_commands.py --list --guild <id>`
   shows what Discord actually has.
 - Fully quit and reopen the Discord client. It caches the command list
   aggressively.

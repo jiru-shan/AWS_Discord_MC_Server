@@ -17,7 +17,7 @@ whole cost model rests on that last step working.
 | `server/bin/`     | Runs on the instance. `servermanager.js` holds the idle-shutdown logic; `update-server-jar.sh`, `install-mods.js` and `seed-players.sh` reconcile the box against config on every boot. |
 | `server/systemd/` | Units that run the server on every boot.                          |
 | `scripts/`        | Discord slash-command registration; the config-docs generator.    |
-| `tests/`          | Four suites: python, two node, bash. `make test` — no dependencies, no AWS. |
+| `tests/`          | Four suites: python, two node, bash. `make test` — no dependencies, no AWS. Must pass on Linux, macOS and Git Bash; see below. |
 | `docs/`           | Setup guides, operations, troubleshooting. `configuration.md` is generated -- edit `variables.tf`, run `make docs`; a test fails if it drifts. |
 
 ### Things worth knowing before changing it
@@ -89,6 +89,16 @@ whole cost model rests on that last step working.
   everything that arrives meanwhile coalesced into the next, bounded so an
   unreachable webhook cannot grow it. Anything else that fires during play
   belongs there too.
+
+- **The suite runs on Linux, macOS and Git Bash, and that constrains what the
+  scripts may use.** macOS still ships bash 3.2 and no `timeout(1)`; Debian and
+  Ubuntu ship no `python` (only `python3`); Windows ships no `python3` and puts
+  non-functional shims for both names on PATH. So: no bash 4 builtins
+  (`mapfile`, `declare -A`) anywhere the tests reach, no GNU-only tool without a
+  fallback, and resolve the interpreter by *running* each candidate rather than
+  locating it. `run.sh` does that once and exports `$PY`; `jq` and `unzip` are
+  stubbed in Python so the promise of "nothing to install" is real. Checking a
+  change on one platform is not checking it.
 
 - **Idle detection parses the server log through `readline`, not raw chunks.**
   The original tested `data.includes(...)` on stdout chunks, which silently

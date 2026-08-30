@@ -39,15 +39,17 @@ side, which has no API for creating an application; that part is
 
 ## What you need
 
+- Linux, macOS or Windows. Everything here works on all three; on Windows, run
+  the shell commands from Git Bash rather than PowerShell.
 - An AWS account, and either the AWS CLI configured (`aws configure`) or the
   usual environment variables set.
 - [Terraform](https://developer.hashicorp.com/terraform/install) 1.5 or newer.
 - Python 3.9 or newer, for the one-off command registration script. No packages
-  to install.
+  to install. It is `python3` on Linux and macOS, usually `python` on Windows.
 - A Discord server where you can add an application.
 
-No Java, Node or Minecraft anything on your machine: the instance installs its
-own.
+No Java, Node or Minecraft anything on your machine to deploy it: the instance
+installs its own.
 
 ## Getting it running
 
@@ -86,7 +88,7 @@ Terraform cannot make for you: it needs the **bot token**, which is a
 credential Discord never hands to AWS.
 
 ```bash
-python scripts/register_commands.py --guild <your server ID>
+python3 scripts/register_commands.py --guild <your server ID>
 ```
 
 It needs three values, which are easy to mix up:
@@ -114,7 +116,7 @@ up. Re-run it whenever you change the command list; it sends the whole set at
 once, so removals take effect too.
 
 ```bash
-python scripts/register_commands.py --list --guild <your server ID>
+python3 scripts/register_commands.py --list --guild <your server ID>
 ```
 
 shows what is currently registered. If it fails, or the commands do not appear,
@@ -286,14 +288,14 @@ GitHub or in your editor needs nothing at all. Regenerate it after editing
 
 ```bash
 make docs                                # or, without make:
-python scripts/generate_config_docs.py
+python3 scripts/generate_config_docs.py
 ```
 
 No packages, no AWS credentials, no Terraform — it parses `variables.tf` and
 writes the file.
 
 ```bash
-python scripts/generate_config_docs.py --check   # exit 1 if it is out of date
+python3 scripts/generate_config_docs.py --check   # exit 1 if it is out of date
 ```
 
 `make check` runs that, and `make test` makes the same assertion from
@@ -428,6 +430,10 @@ make docs              # regenerate docs/configuration.md
 The shell suite runs the real scripts against a stubbed AWS CLI, systemd and
 `curl` inside a throwaway filesystem root. It refuses to start if `shutdown`
 does not resolve to its stub, so it cannot power off the machine you run it on.
+
+The suites need `bash`, Python 3.9+ and Node 20+ and nothing else: `jq` and
+`unzip` are stubbed in Python, and the `timeout` macOS does not ship is
+substituted, so there is nothing to install on any of the three platforms.
 
 Signature verification is pinned to the RFC 8032 test vectors, so a change to
 `ed25519_verify.py` that broke Discord authentication would fail the suite
