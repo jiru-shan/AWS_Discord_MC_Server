@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Stub unzip. Real unzip is not installed everywhere -- a minimal Debian or
+# Ubuntu has neither it nor jq -- and "no packages to install" is a promise the
+# suite makes. Python's zipfile is already a dependency through the jq stub.
+#
+# Supports only the form update-payload.sh uses: unzip -qo <archive> -d <dir>.
+archive=""
+dest="."
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -d) dest="$2"; shift 2 ;;
+    -*) shift ;;
+    *)  archive="$1"; shift ;;
+  esac
+done
+
+for py in python3 python; do
+  if command -v "$py" >/dev/null 2>&1 && "$py" -c '' >/dev/null 2>&1; then
+    exec "$py" -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+      "$archive" "$dest"
+  fi
+done
+echo "unzip stub: no working Python interpreter" >&2
+exit 127

@@ -1,3 +1,13 @@
 #!/usr/bin/env bash
-# Shim so the stub works wherever "python3" is not on PATH (Git Bash, mainly).
-exec python "$(dirname "$0")/jq_impl.py" "$@"
+# jq is implemented in Python so the suite needs nothing installed. The
+# interpreter is called python3 on Linux and macOS, and python in Git Bash on
+# Windows, which ships no python3 -- so try both, and check each one actually
+# runs: Windows puts non-functional App Execution Alias shims for both names on
+# PATH when neither is installed.
+for py in python3 python; do
+  if command -v "$py" >/dev/null 2>&1 && "$py" -c '' >/dev/null 2>&1; then
+    exec "$py" "$(dirname "$0")/jq_impl.py" "$@"
+  fi
+done
+echo "jq stub: no working Python interpreter (tried python3, python)" >&2
+exit 127

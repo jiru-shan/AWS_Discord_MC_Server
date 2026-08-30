@@ -13,6 +13,31 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 STUB_SRC="$HERE/stubs"
 
+# --------------------------------------------------------------------------
+# Platform differences
+#
+# The suite runs on Linux, macOS and Git Bash on Windows, which disagree about
+# what the interpreter is called and which of coreutils they ship.
+# --------------------------------------------------------------------------
+
+# python3 on Linux and macOS; python in Git Bash, which ships no python3. Each
+# candidate is run rather than merely located, because Windows puts App
+# Execution Alias shims for both names on PATH even when neither is installed.
+PY=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c '' >/dev/null 2>&1; then
+    PY="$candidate"
+    break
+  fi
+done
+if [ -z "$PY" ]; then
+  echo "no working Python interpreter found (tried python3, python)." >&2
+  echo "The suite needs one: the jq and unzip stubs are written in Python so" >&2
+  echo "that nothing has to be installed to run it." >&2
+  exit 1
+fi
+export PY
+
 PASS=0
 FAIL=0
 CURRENT=""
@@ -159,6 +184,60 @@ STUBS=$(mktemp -d)
 trap 'rm -rf "$STUBS"' EXIT
 cp "$STUB_SRC"/* "$STUBS/"
 chmod +x "$STUBS"/*
+
+# macOS ships no timeout(1) -- coreutils installs it as gtimeout -- and both
+# this harness and on-stop.sh, which is one of the scripts under test, rely on
+# it. Rather than make the suite depend on Homebrew, drop a stand-in into the
+# stub directory that is already first on PATH. Only created when the real one
+# is missing, so Linux and CI behaviour is untouched.
+if ! command -v timeout >/dev/null 2>&1; then
+  if command -v gtimeout >/dev/null 2>&1; then
+    printf '#!/usr/bin/env bash\nexec gtimeout "$@"\n' > "$STUBS/timeout"
+  else
+    cat > "$STUBS/timeout" <<'TIMEOUT'
+#!/usr/bin/env bash
+# Minimal stand-in for GNU timeout. Supports the two forms this project uses --
+# `timeout SECS CMD...` and `timeout -k SECS SECS CMD...` -- and reports 124 on
+# expiry, which is the exit status the harness and on-stop.sh both key off.
+kill_after=""
+if [ "$1" = "-k" ]; then kill_after="$2"; shift 2; fi
+duration="$1"; shift
+
+marker=$(mktemp)
+"$@" &
+command_pid=$!
+
+(
+  sleep "$duration"
+  if kill -0 "$command_pid" 2>/dev/null; then
+    printf 'expired' > "$marker"
+    kill -TERM "$command_pid" 2>/dev/null
+    if [ -n "$kill_after" ]; then
+      # Poll rather than sleeping the whole grace period: a process that dies
+      # on TERM should not add the full -k window to every timed-out test.
+      i=0
+      while [ "$i" -lt "$kill_after" ] && kill -0 "$command_pid" 2>/dev/null; do
+        sleep 1
+        i=$((i + 1))
+      done
+      kill -KILL "$command_pid" 2>/dev/null
+    fi
+  fi
+) &
+watcher_pid=$!
+
+wait "$command_pid" 2>/dev/null
+status=$?
+
+kill -TERM "$watcher_pid" 2>/dev/null
+wait "$watcher_pid" 2>/dev/null
+[ -s "$marker" ] && status=124
+rm -f "$marker"
+exit "$status"
+TIMEOUT
+  fi
+  chmod +x "$STUBS/timeout"
+fi
 
 export PATH="$STUBS:$PATH"
 resolved=$(command -v shutdown || true)
@@ -602,7 +681,7 @@ cp "$REPO/server/bin/"*.sh "$REPO/server/bin/mc" "$ROOT/newpayload/bin/"
 cp "$REPO/server/bin/servermanager.js" "$ROOT/newpayload/bin/"
 cp "$REPO/server/systemd/"*.service "$ROOT/newpayload/systemd/"
 echo "# marker for the updated copy" >> "$ROOT/newpayload/bin/notify.sh"
-python -c "
+"$PY" -c "
 import os, sys, zipfile
 src, dest = sys.argv[1], sys.argv[2]
 with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as z:
@@ -744,7 +823,7 @@ ops=$(cat "$SERVER_DIR/ops.json")
 assert_contains "$ops" '"name":"Alice"' "first name"
 assert_contains "$ops" '"name":"Carol"' "name after an empty entry"
 assert_not_contains "$ops" '" Bob "' "surrounding whitespace should be trimmed"
-count=$(python -c "import json,sys;print(len(json.load(open(sys.argv[1]))))" "$SERVER_DIR/ops.json" 2>/dev/null)
+count=$("$PY" -c "import json,sys;print(len(json.load(open(sys.argv[1]))))" "$SERVER_DIR/ops.json" 2>/dev/null)
 assert_eq "3" "$count" "an empty entry must not become a player"
 teardown
 

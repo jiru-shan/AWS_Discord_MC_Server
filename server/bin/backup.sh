@@ -66,9 +66,10 @@ else
 fi
 
 # Rotate local copies, newest first.
-mapfile -t stale < <(ls -1t "$BACKUP_DIR"/minecraft-*.tar.gz 2>/dev/null | tail -n +"$((KEEP + 1))")
-for old in "${stale[@]:-}"; do
-  [ -n "$old" ] || continue
-  log "removing old local backup $old"
-  rm -f "$old"
-done
+# A read loop rather than mapfile: mapfile is bash 4, and macOS still ships
+# bash 3.2, which is what the test suite runs this under on a Mac.
+while IFS= read -r stale; do
+  [ -n "$stale" ] || continue
+  log "removing old local backup $stale"
+  rm -f "$stale"
+done < <(ls -1t "$BACKUP_DIR"/minecraft-*.tar.gz 2>/dev/null | tail -n +"$((KEEP + 1))")
