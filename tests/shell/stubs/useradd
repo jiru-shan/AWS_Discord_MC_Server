@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Stub useradd. The suite runs unprivileged and in a throwaway root, so the
+# minecraft account is never really created; bootstrap only needs the call to
+# succeed. Ownership changes elsewhere already tolerate not being root.
+set -uo pipefail
+printf '%s\n' "useradd $*" >> "${STUB_LOG:-/dev/null}"
+exit 0

@@ -147,7 +147,7 @@ ENVEOF
   unset STUB_SERVICE_ACTIVE STUB_IMDS_FAIL STUB_NO_PUBLIC_IP STUB_ROUTE53_FAIL \
         STUB_S3_FAIL STUB_SSM_FAIL STUB_WEBHOOK_FAIL SERVICE_RESULT \
         STUB_JAR_FAIL STUB_JAR_EMPTY STUB_FABRIC_META_FAIL STUB_FABRIC_GAME \
-        STUB_PUBLIC_IP STOP_BACKUP_TIMEOUT_SECONDS STUB_MOJANG_FAIL
+        STUB_PUBLIC_IP STOP_BACKUP_TIMEOUT_SECONDS STUB_MOJANG_FAIL STUB_MOUNTED
 }
 
 teardown() { [ -n "${ROOT:-}" ] && rm -rf "$ROOT"; }
@@ -982,6 +982,22 @@ setup "ops are seeded with an op level, whitelist entries without one" \
 run_script seed-players.sh
 assert_contains "$(cat "$SERVER_DIR/ops.json")" '"level":4' "ops need a level"
 assert_not_contains "$(cat "$SERVER_DIR/whitelist.json")" "level" "whitelist entries do not"
+teardown
+
+setup "re-running bootstrap.sh by hand does not destroy the payload"
+# applying-changes.md, configuration.md and mods.md all tell people to run
+# $INSTALL_DIR/bin/bootstrap.sh to apply a first-boot setting after the fact.
+# That puts PAYLOAD_DIR at $INSTALL_DIR, the *parent* of the copy destination,
+# so the copy step would rm -rf the payload and then fail to refill it -- cp
+# refuses to copy a directory into its own child. The instance recovers from S3
+# on its next boot, but a documented command must not break it meanwhile.
+mkdir -p "$INSTALL_DIR/payload/bin"
+cp "$INSTALL_DIR/bin/"*.sh "$INSTALL_DIR/bin/mc" "$INSTALL_DIR/payload/bin/"
+printf 'sentinel
+' > "$INSTALL_DIR/payload/SENTINEL"
+STUB_MOUNTED=1 run_script bootstrap.sh
+assert_file "$INSTALL_DIR/payload/SENTINEL" "the payload must survive a hand re-run"
+assert_file "$INSTALL_DIR/payload/bin/bootstrap.sh" "and still hold the scripts"
 teardown
 
 setup "seeding never clobbers a list the server owns" 'SERVER_OPS="Alice"'

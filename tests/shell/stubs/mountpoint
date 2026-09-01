@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Stub mountpoint. STUB_MOUNTED=1 reports the data volume as already mounted,
+# which is what a re-run of bootstrap.sh finds on a live instance -- and is the
+# path that skips formatting a disk inside a test.
+set -uo pipefail
+[ -n "${STUB_MOUNTED:-}" ] && exit 0
+exit 1

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Stub java, so bootstrap's "did the packages actually install" check passes.
+set -uo pipefail
+echo 'openjdk version "21.0.0"'
+exit 0

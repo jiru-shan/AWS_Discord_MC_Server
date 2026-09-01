@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Stub dnf. Installing packages needs root and a network, and is not what any
+# of these tests are about -- they care what bootstrap.sh does afterwards.
+set -uo pipefail
+printf '%s\n' "dnf $*" >> "${STUB_LOG:-/dev/null}"
+exit 0
