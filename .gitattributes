@@ -1,0 +1,17 @@
+# Line endings.
+#
+# Everything under server/ runs on the instance, and a CRLF in a shell script
+# breaks its shebang: the kernel looks for an interpreter called "/bin/bash\r".
+# The tests run those same scripts on Linux, macOS and Git Bash, so the repo
+# stores LF and checks out LF everywhere -- Windows editors have handled LF for
+# years, and this is cheaper than debugging a \r that only shows up on the box.
+* text=auto eol=lf
+
+# Never normalise these.
+*.jar  binary
+*.zip  binary
+*.gz   binary
+*.tar  binary
+*.png  binary
+*.jpg  binary
+*.ico  binary

@@ -706,7 +706,21 @@ Number of recent backups to also keep on the data volume for a fast restore.
 
 `string` · default `""`
 
-s3://bucket/key of a backup tarball to unpack on first boot. Use this to migrate an existing world.
+s3://bucket/key of a backup tarball to unpack on first boot. Use this to
+migrate an existing world.
+
+Only consulted when there is no world yet, and the archive is unpacked
+*over* the server directory rather than replacing it. On a real first boot
+that directory is empty, so there is nothing to collide with.
+
+It is different if you reach this later, by deleting the world and re-running
+bootstrap.sh to apply the setting after the fact. The archive's mods land
+beside the ones already installed, and the .managed.json it brings with it
+lists only its own -- so the jars that were there first are read as
+hand-placed, which the mod sync never removes. Two builds of one mod is
+something Fabric may refuse to load. Clear mods/ before restoring that way,
+or use the restore procedure in docs/operations.md, which moves the whole
+server directory aside and unpacks into a fresh one.
 
 ### `force_destroy_buckets`
 

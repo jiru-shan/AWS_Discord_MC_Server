@@ -499,6 +499,41 @@ test('a server that starts and then exits non-zero powers the instance off', () 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('the uptime cap says so in the journal when it is armed', () => {
+  // A cost guard that only takes effect on the boot after the one that set it,
+  // and that ends a session people may be in the middle of. Whether it is on
+  // has to be readable from the journal rather than discovered an hour later.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-cap-'));
+  const runDir = path.join(dir, 'run');
+  fs.mkdirSync(runDir);
+  fs.mkdirSync(path.join(dir, 'server'));
+
+  const env = {
+    ...process.env,
+    RUN_DIR: runDir,
+    SERVER_DIR: path.join(dir, 'server'),
+    JAVA_BIN: process.execPath,
+    NOTIFY_SCRIPT: path.join(dir, 'no-such-notify'),
+  };
+  const args = [path.join(__dirname, '..', 'server', 'bin', 'servermanager.js')];
+
+  const on = spawnSync(process.execPath, args, {
+    env: { ...env, MAX_UPTIME_HOURS: '1' },
+    timeout: 30000,
+    encoding: 'utf8',
+  });
+  assert.match(on.stdout, /uptime cap armed: stopping after 1 hour/);
+
+  const off = spawnSync(process.execPath, args, {
+    env: { ...env, MAX_UPTIME_HOURS: '0' },
+    timeout: 30000,
+    encoding: 'utf8',
+  });
+  assert.doesNotMatch(off.stdout, /uptime cap armed/, 'no cap means no claim of one');
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('shutdown_on_crash = false keeps the box up for debugging', () => {
   // The documented escape hatch: troubleshooting tells people to set this while
   // they are reading a crash, and it is worthless if the box powers off anyway.

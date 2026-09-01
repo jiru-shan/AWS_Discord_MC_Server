@@ -154,7 +154,14 @@ mkdir -p "$SERVER_DIR" "$DATA_MOUNT/backups" "$INSTALL_DIR/bin"
 
 # The payload lives on the root volume so a fresh instance always runs the code
 # Terraform uploaded, not a stale copy left on the data volume.
-if [ "$PAYLOAD_DIR" != "$INSTALL_DIR/payload" ]; then
+#
+# Two paths lead here and only one has anything to copy. cloud-init runs this
+# out of $INSTALL_DIR/payload, and the documented way to re-run it by hand is
+# $INSTALL_DIR/bin/bootstrap.sh, which puts PAYLOAD_DIR at $INSTALL_DIR -- the
+# parent of the destination. Copying a directory into its own child fails, and
+# the rm above would already have deleted the payload it was meant to refresh,
+# so this has to be skipped rather than attempted and allowed to fail.
+if [ "$PAYLOAD_DIR" != "$INSTALL_DIR/payload" ] && [ "$PAYLOAD_DIR" != "$INSTALL_DIR" ]; then
   rm -rf "$INSTALL_DIR/payload"
   mkdir -p "$INSTALL_DIR/payload"
   cp -a "$PAYLOAD_DIR/." "$INSTALL_DIR/payload/"

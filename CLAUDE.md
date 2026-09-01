@@ -47,7 +47,9 @@ whole cost model rests on that last step working.
   only when `manage_server_properties` is true. It reconciles the managed subset
   in place rather than regenerating the file: comments, blank lines, the world
   seed and any key a mod reads are copied through untouched, and the previous
-  file is kept as `.bak`. Adding a key to the managed list there means adding it
+  file is kept as `.bak`. Comments survive the script but not the server: the
+  game rewrites `server.properties` on load and keeps only its own two header
+  lines, whether or not this is enabled. Unknown *keys* do survive that. Adding a key to the managed list there means adding it
   to the list `bootstrap.sh` writes too, or the two drift.
 
 - **A seeded ops/whitelist entry needs a real UUID.** An entry with an empty

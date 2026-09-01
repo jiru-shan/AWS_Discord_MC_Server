@@ -58,13 +58,19 @@ function fakeStore(initial = {}) {
  * url -> body. Anything not listed 404s, which is how a mod with no build for
  * the current Minecraft version is simulated.
  */
-function fakeHttp({ projects = {}, binaries = {}, game = [] } = {}) {
+function fakeHttp({ projects = {}, binaries = {}, game = [], projectMeta = {} } = {}) {
   const calls = [];
   return {
     calls,
     async getJson(url) {
       calls.push(url);
       if (url.includes('meta.fabricmc.net')) return game;
+      // /project/<id> with no /version is the id -> slug lookup.
+      const meta = url.match(/\/project\/([^/]+)$/);
+      if (meta) {
+        if (!(meta[1] in projectMeta)) throw new Error('HTTP 404');
+        return projectMeta[meta[1]];
+      }
       const slug = url.match(/\/project\/([^/]+)\/version/)[1];
       if (!(slug in projects)) throw new Error('HTTP 404');
       return projects[slug];
@@ -782,6 +788,65 @@ test('a dependency of a dependency is followed', async () => {
   ]);
 });
 
+test('an auto-installed requirement is reported by slug, not by project id', async () => {
+  // Modrinth records dependencies as project ids, so without a lookup the one
+  // message that asks the operator to act says "P7dR8mSH was installed", which
+  // names nothing they can put in server_mods.
+  const store = fakeStore();
+  const http = fakeHttp({
+    projects: {
+      spark: [modVersion('spark', { requires: ['P7dR8mSH'] })],
+      'fabric-api': [modVersion('fabric-api')],
+    },
+    projectMeta: { P7dR8mSH: { slug: 'fabric-api' } },
+    binaries: {
+      'https://cdn.modrinth.com/spark-1.0.0.jar': 'a',
+      'https://cdn.modrinth.com/fabric-api-1.0.0.jar': 'b',
+    },
+  });
+
+  const result = await syncMods({
+    specs: ['spark'],
+    minecraft: '1.21.4',
+    store,
+    http,
+    sha1: () => 'body',
+  });
+
+  assert.equal(result.dependencies.length, 1);
+  assert.equal(result.dependencies[0].spec, 'fabric-api', 'the summary must name the slug');
+  assert.equal(result.dependencies[0].requiredBy, 'spark');
+});
+
+test('an unresolvable slug lookup falls back to the id rather than failing', async () => {
+  // A display name is never worth failing a boot over, so a 404 on the lookup
+  // leaves the id in place: uglier, still correct, still installed.
+  const store = fakeStore();
+  const http = fakeHttp({
+    projects: {
+      spark: [modVersion('spark', { requires: ['P7dR8mSH'] })],
+      P7dR8mSH: [modVersion('fabric-api')],
+    },
+    // no projectMeta, so the lookup 404s
+    binaries: {
+      'https://cdn.modrinth.com/spark-1.0.0.jar': 'a',
+      'https://cdn.modrinth.com/fabric-api-1.0.0.jar': 'b',
+    },
+  });
+
+  const result = await syncMods({
+    specs: ['spark'],
+    minecraft: '1.21.4',
+    store,
+    http,
+    sha1: () => 'body',
+  });
+
+  assert.equal(result.dependencies.length, 1, 'it must still be installed');
+  assert.equal(result.dependencies[0].spec, 'P7dR8mSH');
+  assert.equal(result.failed.length, 0, 'a naming failure is not a sync failure');
+});
+
 test('a requirement shared by two mods is fetched once', async () => {
   const store = fakeStore();
   const http = fakeHttp({
@@ -805,8 +870,12 @@ test('a requirement shared by two mods is fetched once', async () => {
     sha1: () => 'body',
   });
   assert.equal(result.dependencies.length, 1, 'resolved once, not once per dependent');
-  const fetches = http.calls.filter((u) => u.includes('shared-id')).length;
-  assert.equal(fetches, 1);
+  const versionFetches = http.calls.filter(
+    (u) => u.includes('shared-id') && u.includes('/version')
+  ).length;
+  assert.equal(versionFetches, 1, 'the version list is fetched once, not once per dependent');
+  const slugLookups = http.calls.filter((u) => u.endsWith('/project/shared-id')).length;
+  assert.equal(slugLookups, 1, 'and the id -> slug lookup is cached across dependents');
 });
 
 test('a requirement the operator already listed is not fetched twice', async () => {

@@ -565,6 +565,16 @@ function main() {
   }
 
   if (config.maxUptimeHours > 0) {
+    // Say so. This is a cost guard that only takes effect on a boot after the
+    // one that configured it, and it ends a session people may be playing, so
+    // "is it actually on?" has to be answerable from the journal rather than by
+    // waiting to find out. The idle countdown announces itself for the same
+    // reason.
+    const capUnit = config.maxUptimeHours === 1 ? 'hour' : 'hours';
+    log(
+      `uptime cap armed: stopping after ${config.maxUptimeHours} ${capUnit}, ` +
+        'even if people are still online'
+    );
     uptimeTimer = setTimeout(() => {
       beginStop('requested', `Reached the ${config.maxUptimeHours} hour uptime cap.`);
     }, config.maxUptimeHours * 3600 * 1000);

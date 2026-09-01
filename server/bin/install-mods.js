@@ -239,6 +239,29 @@ function unmetRequirements(readEntry, files) {
 }
 
 /**
+ * The slug behind a Modrinth project id.
+ *
+ * A build records its dependencies as project ids, so a requirement fetched on
+ * the operator's behalf reports itself as `P7dR8mSH` unless it is looked up --
+ * an identifier nobody can act on, in the one message that asks them to act.
+ * One extra request per distinct requirement, cached for the run, and never
+ * fatal: if the lookup fails the id is still a correct answer, just an ugly
+ * one, and a mod sync must not fail a boot over a display name.
+ */
+async function projectSlug(id, http, cache) {
+  if (cache.has(id)) return cache.get(id);
+  let name = id;
+  try {
+    const project = await http.getJson(`${MODRINTH_API}/project/${id}`);
+    if (project && typeof project.slug === 'string' && project.slug) name = project.slug;
+  } catch {
+    // The id stands in for the name.
+  }
+  cache.set(id, name);
+  return name;
+}
+
+/**
  * The Modrinth project that would supply a missing id.
  *
  * Fabric API ships as one project that provides several dozen module ids, so
@@ -297,6 +320,8 @@ async function syncMods({ specs, minecraft, store, http, sha1, readJarEntry = nu
   // fetched a second time under a different name.
   const satisfied = new Set();
   const queue = [];
+  // project id -> slug, so one requirement is never looked up twice.
+  const slugCache = new Map();
 
   /**
    * Put one resolved build on disk, if it is not already there and correct.
@@ -401,16 +426,21 @@ async function syncMods({ specs, minecraft, store, http, sha1, readJarEntry = nu
     if (satisfied.has(projectId)) continue;
     satisfied.add(projectId);
 
+    // Report it by name. Everything downstream -- the journal line, the
+    // Discord summary, the failure below -- quotes this, and `fabric-api` is
+    // something the operator can put in server_mods where `P7dR8mSH` is not.
+    const name = await projectSlug(projectId, http, slugCache);
+
     let resolved;
     try {
       // A project id works wherever a slug does in Modrinth's API.
-      resolved = await resolveSpec({ kind: 'project', slug: projectId, pin: null, spec: projectId }, {
+      resolved = await resolveSpec({ kind: 'project', slug: name, pin: null, spec: name }, {
         minecraft,
         http,
       });
     } catch (err) {
-      failed.push({ spec: projectId, error: `required by ${requiredBy}: ${err.message}` });
-      log(`${requiredBy} requires ${projectId}, which could not be resolved: ${err.message}`);
+      failed.push({ spec: name, error: `required by ${requiredBy}: ${err.message}` });
+      log(`${requiredBy} requires ${name}, which could not be resolved: ${err.message}`);
       continue;
     }
 
@@ -806,5 +836,6 @@ module.exports = {
   readJarMetadata,
   unmetRequirements,
   projectSupplying,
+  projectSlug,
   MANIFEST,
 };
