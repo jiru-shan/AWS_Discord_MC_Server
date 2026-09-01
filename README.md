@@ -112,34 +112,39 @@ Edit `terraform.tfvars`. The two required values are `discord_public_key` and
 `accept_minecraft_eula`. Everything else has a working default.
 
 > [!IMPORTANT]
-> **Set the first-boot settings now.** A few are read only while the server is
-> being created. Changing them afterwards does nothing until you either turn on
-> `manage_server_properties` or change the thing itself on the instance.
+> **Most settings stay Terraform's. A few are handed over on the first boot.**
+> `server_mods`, `minecraft_version`, the idle timeout and every notification
+> setting are re-read on every boot, so change those whenever. The ones below
+> are different: Terraform writes them once and then the instance owns the
+> file, which is what stops an in-game `/op`, `/whitelist add` or `/difficulty`
+> being silently reverted on the next restart. The price is that editing them
+> in `terraform.tfvars` afterwards does nothing. Set them now — and if you are
+> already past that, the last column is the way back.
 
-| Set before the first apply | Why |
-| --- | --- |
-| `server_ops`, `server_whitelist_players` | Seed `ops.json` and `whitelist.json`, and only while those files do not exist. Once they do, the in-game `/op` and `/whitelist` own them. Use real Minecraft account names — a name Mojang does not know is skipped, with a line in the journal and no operator |
-| `server_motd`, `server_difficulty`, `server_gamemode`, `server_max_players`, `server_view_distance`, `server_simulation_distance`, `server_online_mode`, `server_whitelist` | Written into `server.properties` on the first boot and never rewritten |
-| `server_port` | The same, and it also moves the firewall rule and the address `/address` reports — so changing it later needs both an apply and a file edit |
-| `java_package`, `restore_from_s3` | Used once, while the instance is being built |
+| Set before the first apply | Why | If you are already past it |
+| --- | --- | --- |
+| `server_motd`, `server_difficulty`, `server_gamemode`, `server_max_players`, `server_view_distance`, `server_simulation_distance`, `server_online_mode`, `server_whitelist` | Written into `server.properties` on the first boot and never rewritten | Turn on `manage_server_properties`, or edit the file on the instance |
+| `server_port` | Written into `server.properties` the same way, and it also moves the firewall rule and the address `/address` reports | The apply moves the firewall on its own; the port inside the file needs `manage_server_properties` or an edit |
+| `java_package`, `restore_from_s3` | Used once, while the instance is being built | Nothing re-applies these to an instance that exists |
+| `server_ops`, `server_whitelist_players` | Seed `ops.json` and `whitelist.json`, and only while those files do not exist. Once they do, the in-game `/op` and `/whitelist` own them. Use real Minecraft account names — a name Mojang does not know is skipped, with a line in the journal and no operator | `/op` and `/whitelist add` in game. The seeding is retried on every boot, so it still applies if the file is missing |
 
-Setting `manage_server_properties = true` takes the two `server.properties` rows
-off that list: those settings are then reconciled on every boot and apply like
-anything else. The cost is that hand edits to them, and in-game commands like
-`/difficulty`, are overwritten at the next restart. It is off by default because
-the opposite is the safer surprise.
+`manage_server_properties = true` takes the first two rows back into Terraform's
+hands: those keys are reconciled on every boot like anything else. The price is
+the one the default is avoiding — hand edits and in-game `/difficulty` are
+overwritten at the next restart. It is off by default because that is the
+worse surprise of the two.
 
-Everything else is re-read on every boot — `server_mods`, `minecraft_version`,
-the idle timeout and every notification setting included — so those can change
-whenever. [Applying changes](docs/applying-changes.md) lists what each setting
-needs, and how to change a first-boot one after the fact.
+[Applying changes](docs/applying-changes.md) lists what every setting needs,
+and how to change a first-boot one after the fact.
 
 **3. Deploy.**
 
 > [!WARNING]
-> This creates the server, and the first boot is what bakes in the settings in
-> the table above. Go back and set them now if you have not — afterwards they
-> need [a different route](docs/applying-changes.md#first-boot-only--a-live-instance-needs-more).
+> This creates the server, and its first boot is what writes `server.properties`
+> and installs Java. Go back and set the table above now if you have not —
+> afterwards each of those settings needs its own route, listed in the last
+> column and in full under
+> [a different route](docs/applying-changes.md#first-boot-only--a-live-instance-needs-more).
 
 ```bash
 terraform init
@@ -206,6 +211,51 @@ world volume and fetches Fabric. So the server is most likely up already, and
 If you would rather `terraform apply` left nothing running, set
 `stop_after_provisioning = true`: the instance still boots once to install
 everything, then powers off without starting the server.
+
+## Worth adding next
+
+Three optional settings that change the experience more than anything else in
+the reference. All three are re-read on every boot, so they can go in at any
+point — apply, then `/stop` and `/start`.
+
+### Announcements in Discord
+
+```hcl
+discord_webhook_url = "https://discord.com/api/webhooks/..."
+```
+
+Without it the server starts and stops in silence, so the first anyone knows
+about a shutdown is finding they cannot connect. With it you get
+``Server is up. Connect at `1.2.3.4` `` on the way in,
+`Server stopped due to inactivity.` on the way out, and a crash report with the
+last log lines when something dies at 2am. It is a channel webhook rather than
+the bot, so no credential goes near the instance. One minute to set up:
+**[Notifications](docs/notifications.md)**.
+
+### A domain instead of four numbers
+
+```hcl
+addressing_mode     = "route53"
+route53_zone_id     = "Z0000000000000000000"
+route53_record_name = "mc.example.com"
+```
+
+Players type `mc.example.com` and never learn the IP. It also drops the Elastic
+IP charge, which is the first thing on the bill once the twelve-month free tier
+ends — so on an older account this is cheaper as well as nicer. Needs a domain
+already served by Route 53: **[Route 53 setup](docs/route53-setup.md)**.
+
+### Performance mods
+
+```hcl
+server_mods = ["lithium", "ferrite-core", "krypton"]   # the default
+```
+
+On by default, and the reason a 2 GB `t4g.small` is worth running at all.
+Players install nothing. The list is reconciled against `mods/` on every boot,
+and anything a mod needs to load is fetched with it, so adding one is a line
+here and a restart. More below in [Mods](#mods), in full in
+**[docs/mods.md](docs/mods.md)**.
 
 ## The commands
 
@@ -288,7 +338,7 @@ IP. The comparable always-on instance is about $16.
 Three levers:
 
 - **Room for more players.** `instance_type = "t4g.medium"` doubles memory to
-  4 GB for about $0.034 an hour, and leaves the free tier. Do that if 2-3
+  4 GB for about $0.034 an hour, and leaves the free tier. Do that if 5
   players on one world is not enough.
 - **[`addressing_mode = "route53"`](docs/route53-setup.md)** drops the Elastic
   IP charge entirely, and gives players `mc.example.com` instead of four

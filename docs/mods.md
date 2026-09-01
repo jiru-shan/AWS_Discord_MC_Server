@@ -9,6 +9,7 @@ together: **which mods are installed**, and **how the server and those mods are
 configured**.
 
 - [How the mod sync works](#how-the-mod-sync-works)
+- [Dependencies](#dependencies)
 - [Adding a mod](#adding-a-mod)
 - [Which mods are worth it](#which-mods-are-worth-it)
 - [Client-side mods, and what players need](#client-side-mods-and-what-players-need)
@@ -51,6 +52,68 @@ recorded in `mods/.managed.json`. Anything else in the directory is yours.
 
 Nothing here can stop the server starting: failures are logged under `[mods]`
 and the unit invokes the script with a `-` prefix.
+
+## Dependencies
+
+Some mods do not run alone. `spark` is the usual example: it needs the Fabric
+API, and without it Fabric refuses to boot at all rather than starting without
+the mod — a crash loop on a box whose only door is SSM.
+
+**You do not have to list them.** After downloading, the sync reads
+`fabric.mod.json` out of each jar, works out what the installed set does not
+already provide, and fetches the rest. So this is enough on its own:
+
+```hcl
+server_mods = ["lithium", "ferrite-core", "spark"]
+```
+
+What you get in the journal, from `sudo mc logs` or
+`journalctl -u minecraft`:
+
+```
+[mods] installed spark 1.10.173-fabric as spark-1.10.173-fabric.jar
+[mods] installed fabric-api 0.158.0+26.2 as fabric-api-0.158.0+26.2.jar (required by spark-1.10.173-fabric.jar)
+[mods] 4 installed, 1 removed, 0 failed (Minecraft 26.2)
+[mods] fabric-api was added because spark-1.10.173-fabric.jar requires it
+```
+
+The `(required by ...)` on the install line and the `was added because` line
+after the summary are the whole notification: one for every jar fetched on your
+behalf, so nothing lands in `mods/` without a reason you can read back. In
+`sudo mc mods` they are listed as `managed`, exactly like the entries you asked
+for.
+
+Three things worth knowing:
+
+**The jar decides, not Modrinth.** `spark` declares no dependencies on Modrinth
+and still will not load without the Fabric API. The published list is treated
+as a hint; the metadata inside the downloaded jar is what is acted on. Optional
+and embedded dependencies are left alone.
+
+**A dependency leaves with the mod that wanted it.** Remove `spark` and the
+Fabric API fetched for it is removed too — unless something else still requires
+it, or you listed it yourself.
+
+**Anything outside the Fabric API is named, not guessed.** Every `fabric-*` id
+comes from that one project, so those resolve on their own. For any other
+missing id the sync stops and says so:
+
+```
+[mods] some-mod.jar needs some-library; no project known to supply it
+```
+
+Guessing which Modrinth project publishes an arbitrary id would mean installing
+a stranger's code into the server process, so it names the gap and leaves it to
+you. Add the right slug to `server_mods`. A dependency that exists but has no
+build for the running Minecraft version is reported the same way, rather than
+being skipped quietly:
+
+```
+[mods] spark-1.10.173-fabric.jar requires fabric-api, which could not be resolved: no Fabric build for Minecraft 26.2
+```
+
+None of this can stop the server starting — a dependency that cannot be
+resolved is logged and the boot continues.
 
 ## Adding a mod
 
@@ -368,8 +431,9 @@ and remove that entry from `server_mods` so the next sync does not put it back.
 remove one. The default three have no known conflicts with each other or with
 anything in the table above.
 
-**A mod needs the Fabric API.** Some do — add `fabric-api` to `server_mods`.
-None of the mods recommended here require it.
+**A mod needs the Fabric API.** It is fetched for you — see
+[Dependencies](#dependencies). None of the mods recommended here need it, so a
+`fabric-api` jar in `mods/` means something you added asked for it.
 
 **Everything is installed and it is still slow.** That is a sizing problem, not
 a mod problem. Go back to [tuning for more
