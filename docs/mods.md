@@ -50,8 +50,11 @@ and they stay. Only a version change forces the delete above.
 **Jars you install by hand are never touched.** The sync only removes files
 recorded in `mods/.managed.json`. Anything else in the directory is yours.
 
-Nothing here can stop the server starting: failures are logged under `[mods]`
-and the unit invokes the script with a `-` prefix.
+Nothing here can stop the server starting. Failures are logged under `[mods]`
+and the unit invokes the script with a `-` prefix, and the two cases that
+would otherwise leave Fabric refusing to boot — a jar built for the wrong
+Minecraft version, and a jar whose dependency cannot be supplied — are both
+resolved by deleting the jar. See [Dependencies](#dependencies).
 
 ## Dependencies
 
@@ -112,8 +115,34 @@ being skipped quietly:
 [mods] spark-1.10.173-fabric.jar requires fabric-api, which could not be resolved: no Fabric build for Minecraft 26.2
 ```
 
-None of this can stop the server starting — a dependency that cannot be
-resolved is logged and the boot continues.
+**A mod whose dependency cannot be supplied is removed.** Fabric does not run a
+server with a mod that is missing a dependency — it refuses to load anything at
+all, so one unsatisfiable mod takes the whole server with it. Rather than leave
+that jar in place, the sync deletes it and starts without it:
+
+```
+[mods] BiomesOPlenty-fabric-26.2-26.1.2.0.40.jar needs glitchcore; no project known to supply it
+[mods] removed BiomesOPlenty-fabric-26.2-26.1.2.0.40.jar: requires glitchcore, terrablender, which nothing here supplies; Fabric would not have started
+```
+
+This is the same trade the version check makes — a missing mod is recoverable, a
+server that will not boot is a shell session on a box nobody can join — so it
+gets the same answer. Only jars this script installed are eligible; a jar you
+placed by hand with an unmet dependency is your business and is left alone.
+
+Because you did not ask for the removal, it is announced in Discord as well as
+the journal:
+
+> Mods changed on this boot, and one of them could not be run:
+>
+> - **biomes-o-plenty was removed.** It requires glitchcore, terrablender, which
+>   nothing here can supply. Fabric refuses to load anything at all when a mod is
+>   missing a dependency, so the server would not have started. Add the missing
+>   mod to server_mods, or take this one out.
+
+The entry stays in `server_mods`, so this repeats on every boot until you act on
+it. Two ways out: add the named library to `server_mods` if it is on Modrinth
+under that name, or remove the mod that wants it.
 
 ## Adding a mod
 

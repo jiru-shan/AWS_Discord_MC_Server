@@ -99,6 +99,15 @@ whole cost model rests on that last step working.
   bootstrap call: a `dnf` mirror hiccup or an instance role that has not
   finished propagating fails *above* it, and those are the likelier failures.
 
+  That trap needs `shutdown_on_crash`, so it is the one setting templated into
+  user-data as well as published to SSM. `user_data` is therefore in the
+  instance's `ignore_changes`: cloud-init reads it once, so rewriting it cannot
+  reach a booted instance, but EC2 only permits the write on a *stopped* one --
+  so without that line, editing `shutdown_on_crash` makes the provider stop and
+  start the box to store a value nothing will ever read, disconnecting whoever
+  is playing and leaving a stopped instance running. A replacement still gets
+  the current user-data; `ignore_changes` suppresses updates, not creation.
+
 - **`on-stop.sh` bounds its backup.** systemd kills the whole stop sequence at
   `TimeoutStopSec`, and tar + gzip + an S3 upload of a world that grows every
   session has no natural ceiling. If the backup overruns, the SIGKILL lands

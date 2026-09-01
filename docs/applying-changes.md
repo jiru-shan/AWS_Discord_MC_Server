@@ -132,6 +132,12 @@ These live in the Lambda or in AWS resources, not on the instance.
 
 The normal path. Everything here is read from SSM on each boot.
 
+Which means none of it reaches a session that is already running. For most
+of the list that is merely a delay. For the two cost guards it is a gap worth
+naming: turning `shutdown_on_crash` or `max_uptime_hours` on leaves the
+current session running under the old value, so restart before you count on
+either of them.
+
 `idle_timeout_minutes` · `max_uptime_hours` · `shutdown_on_crash` ·
 `uptime_warning_enabled` · `uptime_warning_hours` ·
 `discord_notify_player_events` · `discord_webhook_url` · `discord_bot_username` ·

@@ -64,7 +64,16 @@ resource "aws_instance" "server" {
   lifecycle {
     # The AMI parameter tracks the latest Amazon Linux release, which would
     # otherwise propose replacing the instance on every apply.
-    ignore_changes = [ami]
+    #
+    # user_data for the reason given where it is set: cloud-init runs it once,
+    # so changing it cannot reach an instance that has already booted. Without
+    # this, editing shutdown_on_crash -- the one setting templated into it --
+    # updates the attribute, and EC2 only allows that on a stopped instance, so
+    # the provider stops and starts the box to write a value nothing will read.
+    # That disconnects whoever is playing and leaves a stopped instance running.
+    # A replacement still gets the current user_data: ignore_changes applies to
+    # updates, not to creation.
+    ignore_changes = [ami, user_data]
   }
 }
 

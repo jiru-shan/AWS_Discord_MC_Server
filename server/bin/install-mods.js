@@ -290,6 +290,7 @@ async function syncMods({ specs, minecraft, store, http, sha1, readJarEntry = nu
   const failed = [];
   const removed = [];
   const dependencies = [];
+  const evicted = [];
 
   // Project ids already accounted for, so a requirement two mods share is
   // resolved once and a requirement the operator listed themselves is not
@@ -462,6 +463,45 @@ async function syncMods({ specs, minecraft, store, http, sha1, readJarEntry = nu
       }
       if (!added) break;
     }
+
+    // Whatever is still unmet cannot be supplied, and Fabric does not start a
+    // server with a mod whose dependency is missing -- it refuses to load
+    // anything at all, so one unsatisfiable mod takes the whole server with
+    // it. This is the same crash the version check above deletes jars to
+    // avoid, arrived at from the other direction, so it gets the same answer:
+    // drop the mod that cannot run. A missing mod is recoverable from Discord;
+    // a server that will not boot is a shell session on a box nobody can join.
+    //
+    // Only jars this script installed are eligible. A hand-placed jar with an
+    // unmet dependency is the operator's business and is left where it is.
+    let evictions = 5;
+    while (evictions-- > 0) {
+      const unmet = unmetRequirements(readJarEntry, installed.map((m) => m.file));
+      if (unmet.length === 0) break;
+
+      const doomed = new Map();
+      for (const want of unmet) {
+        if (!doomed.has(want.file)) doomed.set(want.file, []);
+        doomed.get(want.file).push(want.id);
+      }
+
+      let dropped = false;
+      for (const [file, ids] of doomed) {
+        const index = installed.findIndex((m) => m.file === file);
+        if (index === -1) continue;
+        const entry = installed[index];
+        installed.splice(index, 1);
+        if (store.has(file)) store.remove(file);
+        if (!removed.includes(file)) removed.push(file);
+        evicted.push({ spec: entry.spec, file, missing: ids });
+        log(
+          `removed ${file}: requires ${ids.join(', ')}, which nothing here supplies; ` +
+            'Fabric would not have started'
+        );
+        dropped = true;
+      }
+      if (!dropped) break;
+    }
   }
 
   // Anything this script put there before and no longer wants. Files it never
@@ -480,7 +520,7 @@ async function syncMods({ specs, minecraft, store, http, sha1, readJarEntry = nu
     `${JSON.stringify({ version: MANIFEST_VERSION, minecraft, mods: installed }, null, 2)}\n`
   );
 
-  return { installed, failed, removed, dependencies, minecraft };
+  return { installed, failed, removed, dependencies, evicted, minecraft };
 }
 
 // --------------------------------------------------------------------------
@@ -707,15 +747,34 @@ async function main() {
   for (const dep of result.dependencies || []) {
     notable.push(`- ${dep.spec} was installed because ${dep.requiredBy} requires it`);
   }
+
+  // An eviction is the one line here that is a call to action rather than a
+  // note, so it says what was lost, why, and what puts it back.
+  for (const drop of result.evicted || []) {
+    notable.push(
+      `- **${drop.spec} was removed.** It requires ${drop.missing.join(', ')}, which nothing ` +
+        'here can supply. Fabric refuses to load anything at all when a mod is missing a ' +
+        'dependency, so the server would not have started. Add the missing mod to ' +
+        'server_mods, or take this one out.'
+    );
+  }
+
+  // The eviction line above already explains these; do not say it twice.
+  const evictedFiles = new Set((result.evicted || []).map((drop) => drop.file));
   for (const failure of result.failed) {
+    if (evictedFiles.has(failure.spec)) continue;
     notable.push(`- ${failure.spec} was not installed: ${failure.error}`);
   }
 
   if (notable.length > 0) {
+    const header =
+      (result.evicted || []).length > 0
+        ? 'Mods changed on this boot, and one of them could not be run:'
+        : 'Mods changed on this boot:';
     try {
       execFileSync(
         process.env.NOTIFY_SCRIPT || '/opt/minecraft/bin/notify.sh',
-        [`Mods changed on this boot:\n${notable.join('\n')}`],
+        [`${header}\n${notable.join('\n')}`],
         { timeout: 15000, stdio: 'ignore' }
       );
     } catch (err) {

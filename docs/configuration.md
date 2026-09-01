@@ -516,6 +516,9 @@ Minutes with no players before the server saves, backs up and powers the instanc
 
 Hard cap on a single session, as a runaway-cost guard. 0 disables it.
 
+Read from SSM at boot, so raising or lowering it does not reach a session
+that is already running: apply, then /stop and /start before relying on it.
+
 ### `uptime_warning_enabled`
 
 `bool` · default `true`
@@ -556,7 +559,17 @@ when the server does. Ignored entirely when uptime_warning_enabled is false.
 
 `bool` · default `true`
 
-Power the instance off if the server exits unexpectedly, so a crash cannot quietly bill for hours. Turn off while debugging.
+Power the instance off if the server exits unexpectedly, so a crash cannot
+quietly bill for hours. Turn off while debugging.
+
+Read from SSM on every boot, so it applies like any other setting: apply,
+then /stop and /start. It is also templated into user-data, for the first
+boot's EXIT trap -- but user_data is in the instance's ignore_changes, so
+editing this never touches a running instance.
+
+That means turning it ON does not arm it. A session already running keeps
+the value it booted with, so a crash before the next restart still leaves
+the instance up. Apply, then /stop and /start before relying on it.
 
 ### `manage_server_properties`
 

@@ -457,6 +457,78 @@ test('a server process that cannot be spawned still powers the instance off', ()
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('a server that starts and then exits non-zero powers the instance off', () => {
+  // The crash branch, which is what shutdown_on_crash defaults to true for. A
+  // JVM that dies an hour in leaves nobody watching, so the sentinel is the
+  // only thing between a crash and an instance billing until somebody notices.
+  // JAVA_BIN is node given java's arguments: it starts, rejects them, and exits
+  // non-zero -- a real exit rather than a spawn failure, which is the branch
+  // the spawn test above already covers.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-crash-'));
+  const runDir = path.join(dir, 'run');
+  fs.mkdirSync(runDir);
+  fs.mkdirSync(path.join(dir, 'server'));
+
+  const result = spawnSync(
+    process.execPath,
+    [path.join(__dirname, '..', 'server', 'bin', 'servermanager.js')],
+    {
+      env: {
+        ...process.env,
+        RUN_DIR: runDir,
+        SERVER_DIR: path.join(dir, 'server'),
+        JAVA_BIN: process.execPath,
+        NOTIFY_SCRIPT: path.join(dir, 'no-such-notify'),
+        SHUTDOWN_ON_CRASH: 'true',
+      },
+      timeout: 30000,
+      encoding: 'utf8',
+    }
+  );
+
+  assert.notEqual(result.signal, 'SIGTERM', 'the manager must exit on its own');
+
+  const sentinel = path.join(runDir, 'idle-shutdown');
+  assert.equal(
+    fs.existsSync(sentinel),
+    true,
+    'no sentinel means on-stop.sh leaves a crashed instance up and billing'
+  );
+  assert.equal(fs.readFileSync(sentinel, 'utf8').trim(), 'crash');
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('shutdown_on_crash = false keeps the box up for debugging', () => {
+  // The documented escape hatch: troubleshooting tells people to set this while
+  // they are reading a crash, and it is worthless if the box powers off anyway.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-nocrash-'));
+  const runDir = path.join(dir, 'run');
+  fs.mkdirSync(runDir);
+  fs.mkdirSync(path.join(dir, 'server'));
+
+  spawnSync(process.execPath, [path.join(__dirname, '..', 'server', 'bin', 'servermanager.js')], {
+    env: {
+      ...process.env,
+      RUN_DIR: runDir,
+      SERVER_DIR: path.join(dir, 'server'),
+      JAVA_BIN: process.execPath,
+      NOTIFY_SCRIPT: path.join(dir, 'no-such-notify'),
+      SHUTDOWN_ON_CRASH: 'false',
+    },
+    timeout: 30000,
+    encoding: 'utf8',
+  });
+
+  assert.equal(
+    fs.existsSync(path.join(runDir, 'idle-shutdown')),
+    false,
+    'a sentinel here would power off the box somebody is trying to debug'
+  );
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 // --------------------------------------------------------------------------
 // Long-session warnings
 //

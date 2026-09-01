@@ -27,6 +27,7 @@ const {
   syncMods,
   resolveMinecraftVersion,
   directoryStore,
+  readManifest,
   readJarMetadata,
   unmetRequirements,
   projectSupplying,
@@ -1021,6 +1022,99 @@ test('syncMods fetches what a jar says it needs, even when Modrinth does not', a
     'the jar asked for it even though the index did not'
   );
   assert.equal(result.failed.length, 0);
+});
+
+test('a mod whose dependency cannot be supplied is removed, not left to break the boot', async () => {
+  const store = fakeStore();
+  const http = fakeHttp({
+    projects: { lonely: [modVersion('lonely')] },
+    binaries: { 'https://cdn.modrinth.com/lonely-1.0.0.jar': 'a' },
+  });
+
+  const result = await syncMods({
+    specs: ['lonely'],
+    minecraft: '1.21.4',
+    store,
+    http,
+    sha1: () => 'body',
+    readJarEntry: fakeJars({ 'lonely-1.0.0.jar': { id: 'lonely', depends: { 'some-lib': '*' } } }),
+  });
+
+  // Fabric will not start with it, so it must not be left on disk.
+  assert.equal(store.has('lonely-1.0.0.jar'), false);
+  assert.ok(result.removed.includes('lonely-1.0.0.jar'));
+  assert.equal(result.installed.find((m) => m.file === 'lonely-1.0.0.jar'), undefined);
+
+  // And it says which requirement did it, so the message can name a fix.
+  assert.equal(result.evicted.length, 1);
+  assert.equal(result.evicted[0].spec, 'lonely');
+  assert.deepEqual(result.evicted[0].missing, ['some-lib']);
+});
+
+test('an evicted mod is kept out of the manifest, so it is not counted as installed', async () => {
+  const store = fakeStore();
+  const http = fakeHttp({
+    projects: { lonely: [modVersion('lonely')] },
+    binaries: { 'https://cdn.modrinth.com/lonely-1.0.0.jar': 'a' },
+  });
+
+  await syncMods({
+    specs: ['lonely'],
+    minecraft: '1.21.4',
+    store,
+    http,
+    sha1: () => 'body',
+    readJarEntry: fakeJars({ 'lonely-1.0.0.jar': { id: 'lonely', depends: { 'some-lib': '*' } } }),
+  });
+
+  assert.deepEqual(readManifest(store).mods, []);
+});
+
+test('a satisfiable dependency is still installed rather than evicted', async () => {
+  const store = fakeStore();
+  const http = fakeHttp({
+    projects: {
+      spark: [modVersion('spark')],
+      'fabric-api': [modVersion('fabric-api')],
+    },
+    binaries: {
+      'https://cdn.modrinth.com/spark-1.0.0.jar': 'a',
+      'https://cdn.modrinth.com/fabric-api-1.0.0.jar': 'b',
+    },
+  });
+
+  const result = await syncMods({
+    specs: ['spark'],
+    minecraft: '1.21.4',
+    store,
+    http,
+    sha1: () => 'body',
+    readJarEntry: fakeJars({
+      'spark-1.0.0.jar': { id: 'spark', depends: { 'fabric-api-base': '*' } },
+      'fabric-api-1.0.0.jar': { id: 'fabric-api', provides: ['fabric-api-base'] },
+    }),
+  });
+
+  assert.equal(result.evicted.length, 0);
+  assert.equal(store.has('spark-1.0.0.jar'), true);
+  assert.equal(store.has('fabric-api-1.0.0.jar'), true);
+});
+
+test('a hand-placed jar with an unmet dependency is left alone', async () => {
+  const store = fakeStore({ 'mine.jar': 'x' });
+  const http = fakeHttp({ projects: {}, binaries: {} });
+
+  const result = await syncMods({
+    specs: [],
+    minecraft: '1.21.4',
+    store,
+    http,
+    sha1: () => 'body',
+    readJarEntry: fakeJars({ 'mine.jar': { id: 'mine', depends: { 'some-lib': '*' } } }),
+  });
+
+  assert.equal(store.has('mine.jar'), true);
+  assert.equal(result.evicted.length, 0);
 });
 
 test('a requirement nothing can supply is named rather than left to crash the server', async () => {
