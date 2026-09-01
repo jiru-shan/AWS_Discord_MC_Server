@@ -42,18 +42,55 @@ side, which has no API for creating an application; that part is
 - Linux, macOS or Windows. Everything here works on all three; on Windows, run
   the shell commands from Git Bash rather than PowerShell.
 - An AWS account, and either the AWS CLI configured (`aws configure`) or the
-  usual environment variables set. **Include a default region.** Credentials
-  without one leave every `aws` command failing against a host called
-  `ssm.None.amazonaws.com`, which names everything except the problem;
-  `aws configure` asks for a region, and an environment-variable setup needs
-  `AWS_DEFAULT_REGION` alongside the key pair.
+  usual environment variables set. **Include a default region.** Without one
+  every `aws` command fails against a malformed endpoint that names everything
+  except the problem -- `sts..amazonaws.com` when the region is simply unset,
+  or `sts.None.amazonaws.com` when something has written the literal string
+  `None` into `~/.aws/config`. `aws configure` asks for a region, and an
+  environment-variable setup needs `AWS_DEFAULT_REGION` alongside the key pair.
 - [Terraform](https://developer.hashicorp.com/terraform/install) 1.5 or newer.
 - Python 3.9 or newer, for the one-off command registration script. No packages
   to install. It is `python3` on Linux and macOS, usually `python` on Windows.
 - A Discord server where you can add an application.
+- Optional, and only for opening a shell on the instance: the
+  [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
+  It installs separately from the AWS CLI, and `aws ssm start-session` fails
+  without it. Nothing in the deployment needs it.
 
 No Java, Node or Minecraft anything on your machine to deploy it: the instance
 installs its own.
+
+### Windows notes
+
+Everything here works from Git Bash, with three quirks worth knowing before
+they bite. None of them affect the deployment -- they are all about reading
+things back afterwards.
+
+**Arguments that start with a slash get rewritten.** Git Bash turns a
+leading-slash argument into a Windows path, so a CloudWatch log group name
+arrives at the CLI as `C:/Program Files/Git/aws/lambda/...` and the call fails
+validation. Prefix the command:
+
+```bash
+MSYS_NO_PATHCONV=1 aws logs tail /aws/lambda/minecraft-discord --follow
+```
+
+This applies to any `aws` argument beginning with `/` -- log group names above
+all. Paths *inside* the instance are typed in a shell on the instance, so they
+are unaffected.
+
+**Instance logs need a UTF-8 console.** systemd writes arrow characters, and
+the AWS CLI on a `cp1252` console dies on them with `'charmap' codec can't
+encode character '\u2192'` rather than printing the log:
+
+```bash
+export PYTHONUTF8=1        # once per shell, before reading instance logs
+```
+
+**`make` is usually absent, and `python3` often is too.** Every `make` target
+is a one-line command you can run directly -- see [Testing](#testing) for the
+test suites, and the `Makefile` itself for the rest. The interpreter is
+normally `python` rather than `python3`.
 
 ## Getting it running
 
@@ -468,6 +505,18 @@ make test-shell        # the on-instance scripts                     (bash)
 make docs              # regenerate docs/configuration.md
 ```
 
+Without `make` -- which Windows generally does not have -- each target is a
+single command. Use `python` in place of `python3` where that is the name you
+have:
+
+```bash
+python3 -m unittest discover -s tests    # test-lambda
+node --test tests/test_session.js        # test-session
+node --test tests/test_mods.js           # test-mods
+bash tests/shell/run.sh                  # test-shell
+python3 scripts/generate_config_docs.py  # docs
+```
+
 The shell suite runs the real scripts against a stubbed AWS CLI, systemd and
 `curl` inside a throwaway filesystem root. It refuses to start if `shutdown`
 does not resolve to its stub, so it cannot power off the machine you run it on.
@@ -488,6 +537,13 @@ Open a root shell without SSH keys or an open port:
 aws ssm start-session --target $(terraform -chdir=terraform output -raw instance_id)
 sudo mc status
 ```
+
+This one command needs the
+[Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html),
+which installs separately from the AWS CLI; without it `start-session` fails
+before it reaches AWS. The instance must also be running, so `/start` first.
+`terraform -chdir=terraform output -raw shell_command` prints the same command
+with the region already filled in.
 
 `mc` is a small admin CLI on the instance: `mc status`, `mc logs -f`,
 `mc console <command>`, `mc backup`, `mc mods`, `mc version`, `mc upgrade`,

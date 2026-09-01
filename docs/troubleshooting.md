@@ -14,6 +14,12 @@ Read the Lambda logs while you click Save:
 aws logs tail /aws/lambda/minecraft-discord --follow
 ```
 
+On Windows, run this from Git Bash with `MSYS_NO_PATHCONV=1` in front of it.
+Git Bash rewrites the leading-slash log group name into a Windows path, and the
+CLI rejects it with a `logGroupName` validation error that has nothing to do
+with the log group. The function name assumes the default `project_name`; with
+another value it is `<project_name>-discord`.
+
 | What you see                                    | Cause                                                       |
 | ----------------------------------------------- | ----------------------------------------------------------- |
 | Nothing at all                                   | Wrong URL. Re-copy `discord_interactions_endpoint_url`, including the trailing slash. |
@@ -43,6 +49,8 @@ Work out whether the Lambda is being reached at all:
 ```bash
 aws logs tail /aws/lambda/minecraft-discord --since 1h --region <region>
 ```
+
+(Windows: prefix with `MSYS_NO_PATHCONV=1`, as above.)
 
 **Log lines appear.** The Lambda ran. Read the error there.
 
@@ -297,13 +305,20 @@ systemctl is-enabled minecraft-refresh
 ## Every `aws` command says "Could not connect to the endpoint URL"
 
 ```
+Could not connect to the endpoint URL: "https://ssm..amazonaws.com/"
 Could not connect to the endpoint URL: "https://ssm.None.amazonaws.com/"
+Invalid endpoint: https://sts..amazonaws.com
 ```
 
-The `None` is the region. Credentials are set but no default region is, so the
-CLI builds a hostname out of nothing. Terraform is unaffected -- it passes the
-region from `aws_region` explicitly -- which is why an apply can succeed while
-every command in these docs fails.
+The gap in the hostname is the region. Credentials are set but no usable
+default region is, so the CLI builds a hostname out of nothing. The empty
+spelling means no region is configured at all; the literal `None` means
+something wrote the four-character string `None` into `~/.aws/config`, which
+`aws configure` will do if you type it at the region prompt. Check with
+`aws configure list` -- it prints the region and where it came from.
+
+Terraform is unaffected -- it passes the region from `aws_region` explicitly --
+which is why an apply can succeed while every command in these docs fails.
 
 ```bash
 aws configure                       # asks for a region, among other things
@@ -400,3 +415,9 @@ sudo tail -f /var/log/cloud-init-output.log    # first boot only
 # From your machine
 aws logs tail /aws/lambda/minecraft-discord --follow
 ```
+
+On Windows, from Git Bash: prefix the last one with `MSYS_NO_PATHCONV=1` so the
+log group name survives, and `export PYTHONUTF8=1` before reading instance logs
+-- systemd writes arrow characters, and the AWS CLI on a `cp1252` console fails
+on them with `'charmap' codec can't encode character` instead of printing the
+log.

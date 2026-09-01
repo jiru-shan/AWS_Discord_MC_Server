@@ -77,10 +77,15 @@ Then `/stop` and `/start` in Discord. Or, without waiting for a boot:
 ```bash
 aws ssm start-session --target $(terraform -chdir=terraform output -raw instance_id)
 sudo systemctl restart minecraft   # refresh the config, then re-resolve and prune
-sudo systemctl restart minecraft
-sudo mc mods                   # what is installed now
-sudo mc logs -f                # watch it come up
+sudo mc mods                       # what is installed now
+sudo mc logs -f                    # watch it come up
 ```
+
+One restart is enough. `minecraft.service` wants `minecraft-refresh.service`,
+which is a `oneshot` with `RemainAfterExit=no`, so it goes back to inactive
+after each run and starts again -- and finishes first -- every time the server
+is started. The new `server_mods` is therefore already in
+`/etc/minecraft/config.env` by the time `install-mods.js` reads it.
 
 Fabric reads `mods/` once, at launch, so a sync always needs a restart.
 

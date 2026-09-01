@@ -45,14 +45,16 @@ output "next_steps" {
        Discord sends a signed test request when you save. If it saves cleanly,
        the endpoint is live.
 
-    2. Register the slash commands:
-         python3 scripts/register_commands.py
+    2. Register the slash commands (python3 on Linux and macOS, usually
+       python on Windows):
+         python3 scripts/register_commands.py --guild <your server ID>
 
     3. In Discord, run /start. First boot installs Java and downloads the
        server, so allow around five minutes; later boots take about ninety
        seconds.
 
-    Watch the first boot with:
+    Watch the first boot with (needs the Session Manager plugin, which
+    installs separately from the AWS CLI):
       aws ssm start-session --target ${aws_instance.server.id} --region ${var.aws_region}
       sudo tail -f /var/log/cloud-init-output.log
   EOT
